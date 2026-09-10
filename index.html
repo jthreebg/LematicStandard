@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content" />
+  <meta name="description" content="LeMatic field service inspections, punchlists, and job reports." />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="LeMatic FS" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="application-name" content="LeMatic FS" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+  <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />
+  <title>LeMatic Field Service</title>
+    <script>
+    (function(){try{if(localStorage.getItem('lx8_theme')==='light')document.documentElement.classList.add('theme-light');}catch(e){}})();
+  </script>
+  <link rel="stylesheet" href="app.css?v=64" />
+  
+
+
+</head>
+<body class="on-home">
+  <!-- Header -->
+  <header class="app-header" id="appHeader">
+    <button type="button" class="header-btn" id="btnHeaderBack" title="Back" aria-label="Back">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M14.5 5.5L8 12l6.5 6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+
+      <button type="button" class="header-btn" id="btnSettings" title="Settings" aria-label="Settings">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z" stroke="currentColor" stroke-width="1.7"/>
+          <path d="M19.4 13.05c.04-.34.06-.7.06-1.05s-.02-.71-.06-1.05l1.74-1.36a.4.4 0 0 0 .1-.51l-1.65-2.86a.4.4 0 0 0-.48-.18l-2.05.82a7.2 7.2 0 0 0-1.82-1.05l-.31-2.18A.4.4 0 0 0 14.52 3h-5.04a.4.4 0 0 0-.4.34l-.31 2.18c-.66.27-1.27.63-1.82 1.05l-2.05-.82a.4.4 0 0 0-.48.18L2.77 8.59a.4.4 0 0 0 .1.51l1.74 1.36c-.04.34-.06.7-.06 1.05s.02.71.06 1.05l-1.74 1.36a.4.4 0 0 0-.1.51l1.65 2.86c.1.18.32.26.48.18l2.05-.82c.55.42 1.16.78 1.82 1.05l.31 2.18c.04.2.21.34.4.34h5.04c.19 0 .36-.14.4-.34l.31-2.18c.66-.27 1.27-.63 1.82-1.05l2.05.82c.16.08.38 0 .48-.18l1.65-2.86a.4.4 0 0 0-.1-.51l-1.74-1.36z" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    <div class="header-logo" id="headerLogo">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAARgAAABfCAMAAAAEeijeAAAAwFBMVEWmlJfdGizHoqeAfnzlJkJfXmDe3+DqbnjuboN+gILAv8CBf4BBP0AhHyA/QD2/wL7+/v4pJSLsGTgYFBHq6OjpCCe2tbWoqKnY2NgOCwmXl5fHx8ghHRpYV1Z5d3eIiIloZ2clIR7wqbXtWW1JSEY5NzbnAhjuiJb0ucToJ0T1xs7qZnfnJDrnNktjYV7wmaboRVfysrzsd4fy1dlgXl3g4N6+vsB9fYHpTGKenqHBwb5CQD2CgX5APjztkpzy3eJTa3DcAAAAQHRSTlP/////////////////////////////////////////////////////////////////////////////////////73leyQAAE3tJREFUeNrtnWl7m7q2gJ103MM514CQhGQQxkzGdj2lGZo2+f//6iyNDHZa0r17PzTR0xhhA4aXpTVp4U6mr+1sm4zaqsnGtPrlgakuQv+H7WKBXh6YEVz88iWCGcHFDxfTV4l5BfMsMK865lViWh2zfAVzDkwZyvYKptMQxV/w5e52t4ZL/y6clwMGcSKSOI+viskxa5pse1hs/KfRvBAwlIjYiwL4x1LvElVbADVFx+ywWD/B5kWA4Un6Loi+JZ4XJ6kXT5ojhEKo2R6nKMsOmzJ8mWBwmickyRnCBUMoielhdzz466p5C3/ValtXm/AFgqFJnlCepnTKcwLrKYEgcluVZfmw98td9nCxyerDunxhYBCJEz7FuXicvs8F6BWcY1SVixqskp9tL8rNdr8BPNntUNX83mB4HBSCpfAiRB4kSfpX7KXJ5CFD2TaTr1W1fUQwnBDarsOXA4bkKSOk8BgRk9hjTAiWx0xMDtWx/lBVqwplh8OiQs1iddjXu/KlgGEFU3S4XEmZGlpyAQpmK71fWDzIxarZlaVfHRflywAjCiy5qNepiFWwzHMsg8jwUPuh/zbcNIty6ZfVI9il8vC4Cl8CmKSQksKV1Exprj/CUnwquOpmE8qooNrLgLLcNrBSrtDH8vcHI9QIQnGiR1VqtE6q0g7lBkYPyEy5qW9LGTVlD6EflovOaPpd8zGswAhakr+XCxoLpJpI4aVa+7t65S+Xy7W/zdbr5dLfHeX6xQfkNHAHDKX0Ef7okT6PFaL0Pe20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" alt="LeMatic" class="logo-img header-logo-img header-logo-pill" />
+    </div>
+    <div class="header-actions">
+      <button class="header-btn" id="btnSearch" title="Search" aria-label="Search">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button class="header-btn" id="btnInspectHome" title="Inspections" aria-label="Inspections">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="8" y="3.2" width="8" height="3.6" rx="1" stroke="currentColor" stroke-width="1.6"/>
+          <rect x="5.2" y="5.2" width="13.6" height="15.6" rx="2.4" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M9 12h6M9 16h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>      <button type="button" class="header-btn" id="btnHeaderPunchlist" title="Punchlists" aria-label="Punchlists">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="4.2" y="3.2" width="15.6" height="17.6" rx="2.2" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button class="header-btn" id="btnHome" title="Home" aria-label="Home">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M4 10.5L12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1v-9.5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+  <div class="search-bar" id="searchBar">
+    <div class="search-field">
+      <svg class="search-glyph" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="11" cy="11" r="6.2" stroke="currentColor" stroke-width="1.8"/>
+        <path d="M20 20l-3.6-3.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+      <input type="search" id="inpSearch" placeholder="Search" autocomplete="off" enterkeyhint="search" />
+      <button type="button" class="search-clear" id="btnSearchClear" aria-label="Clear search">
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path d="M2 2l8 8M10 2L2 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+    <button type="button" class="search-cancel" id="btnSearchCancel">Cancel</button>
+  </div>
+  <div id="searchScrim" hidden></div>
+  <div id="searchResults" hidden></div>
+  <div class="section-progress" id="sectionDots"></div>
+
+  <!-- HOME SCREEN -->
+  <div class="screen active" id="screenHome">
+    <div id="homeAmbientGlow" aria-hidden="true"></div>
+    <div class="hero">
+      <img src="data:image/png;base64,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" alt="LeMatic" class="home-round-logo" />
+      <h2 id="headerTitleHome">Field Service</h2>
+    </div>
+    <div class="home-bottom">
+    <div id="homeCurrentJobCard" class="hidden">
+      <div class="pl-item" id="homeCurrentJobItem">
+        <div class="home-job-kicker">Current job</div>
+        <div class="list-item-main">
+          <div class="title" id="homeCurrentJobTitle">—</div>
+          <div class="sub" id="homeCurrentJobSub"></div>
+        </div>
+        <div class="list-item-actions">
+          <span class="badge" id="homeCurrentJobBadge"></span>
+        </div>
+      </div>
+    </div>
+    <div class="home-tiles">
+      <button type="button" class="home-tile" id="homeTileInspect">
+        <div class="home-tile-icon" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="8" y="3.2" width="8" height="3.6" rx="1" stroke="currentColor" stroke-width="0.9"/>
+            <rect x="5.2" y="5.2" width="13.6" height="15.6" rx="2.4" stroke="currentColor" stroke-width="0.9"/>
+            <path d="M9 12h6M9 16h4" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="home-tile-title">Inspections</div>
+      </button>
+      <button type="button" class="home-tile" id="homeTilePunchlist">
+        <div class="home-tile-icon" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="4.2" y="3.2" width="15.6" height="17.6" rx="2.2" stroke="currentColor" stroke-width="0.9"/>
+            <path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="home-tile-title">Punchlist</div>
+      </button>
+      <button type="button" class="home-tile" id="homeTileTime">
+        <div class="home-tile-icon" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="0.9"/>
+            <path d="M12 7.5v5l3.2 2" stroke="currentColor" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="home-tile-title">Time Cards</div>
+      </button>
+      <button type="button" class="home-tile" id="homeTileJobs">
+        <div class="home-tile-icon" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="4.2" y="8" width="15.6" height="11.2" rx="2" stroke="currentColor" stroke-width="0.9"/>
+            <path d="M9 8V6.8A1.8 1.8 0 0 1 10.8 5h2.4A1.8 1.8 0 0 1 15 6.8V8" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/>
+            <path d="M4.2 12.5h15.6" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="home-tile-title">Jobs</div>
+      </button>
+    </div>
+    <input type="file" id="restoreZipInput" accept=".zip,application/zip" class="hidden" />
+    </div>
+  </div>
+
+
+
+  <div class="screen" id="screenTime">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker">Field service</div>
+        <h2>Time Cards</h2>
+      </div>
+      <button type="button" class="btn btn-outline" id="btnTcExport" style="width:auto;padding:0 14px;height:40px;min-height:40px;line-height:40px;font-size:0.85rem;">Export</button>
+    </div>
+
+    <div class="card tc-status-card" id="tcStatusCard">
+      <div class="tc-status-kicker" id="tcStatusKicker">Not clocked in</div>
+      <div class="tc-status-time" id="tcStatusTime">0h 00m</div>
+      <div class="tc-status-meta" id="tcStatusMeta">Select type and job, then clock in</div>
+      <div class="tc-type-row" id="tcTypeRow">
+        <button type="button" class="tc-type-chip on" data-type="bakery">Bakery</button>
+        <button type="button" class="tc-type-chip" data-type="travel">Travel</button>
+        <button type="button" class="tc-type-chip" data-type="shop">Shop</button>
+      </div>
+      <div class="form-group">
+        <label for="tcJobSelect">Job</label>
+        <select id="tcJobSelect"><option value="">— No job —</option></select>
+      </div>
+      <div class="btn-row">
+        <button type="button" class="btn btn-primary" id="btnTcClockIn">Clock In</button>
+        <button type="button" class="btn btn-outline" id="btnTcClockOut" disabled>Clock Out</button>
+      </div>
+    </div>
+
+    <div class="tc-week-strip" id="tcWeekStrip"></div>
+    <div class="tc-footer-actions">
+      <button type="button" class="btn btn-outline" id="btnTcAddManual">Add hours</button>
+    </div>
+  </div>
+
+  <div class="screen" id="screenTimeWeek">
+    <div class="list-page-head">
+      <div id="tcWeekDetailHead" style="cursor:pointer;flex:1;min-width:0;">
+        <div class="list-page-kicker">Week</div>
+        <h2 id="tcWeekDetailTitle">Week</h2>
+        <select id="tcWeekSelect" aria-label="Select week" class="tc-week-select-native"></select>
+      </div>
+      <button type="button" class="btn btn-outline" id="btnTcWeekExport" style="width:auto;padding:0 14px;height:40px;min-height:40px;line-height:40px;font-size:0.85rem;">Export</button>
+    </div>
+    <div class="tc-week-totals" id="tcWeekDetailTotals">
+      <span>Bakery<strong id="tcDetBakery">0.00</strong></span>
+      <span>Travel<strong id="tcDetTravel">0.00</strong></span>
+      <span>Shop<strong id="tcDetShop">0.00</strong></span>
+      <span class="tc-total-emph">Total<strong id="tcDetAll">0.00</strong></span>
+    </div>
+    <div id="tcEntryList" class="tc-entry-list"></div>
+    <div class="tc-footer-actions">
+      <button type="button" class="btn btn-outline" id="btnTcAddManualWeek">Add hours</button>
+    </div>
+  </div>
+
+  <div class="screen" id="screenTimeEdit">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker">Time entry</div>
+        <h2 id="tcEditTitle">Edit hours</h2>
+      </div>
+    </div>
+    <div class="card">
+      <div class="form-group">
+        <label for="tcEditDate">Date</label>
+        <input type="date" id="tcEditDate" />
+      </div>
+      <div class="form-group">
+        <label for="tcEditType">Type</label>
+        <select id="tcEditType">
+          <option value="bakery">Bakery</option>
+          <option value="travel">Travel</option>
+          <option value="shop">Shop</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="tcEditJob">Job</label>
+        <select id="tcEditJob"></select>
+      </div>
+      <div class="form-group">
+        <label for="tcEditClockIn">Clock in</label>
+        <input type="time" id="tcEditClockIn" />
+      </div>
+      <div class="form-group">
+        <label for="tcEditClockOut">Clock out</label>
+        <input type="time" id="tcEditClockOut" />
+      </div>
+      <div class="form-group">
+        <label for="tcEditHours">Hours</label>
+        <input type="number" id="tcEditHours" min="0" max="24" step="0.25" inputmode="decimal" />
+        <div class="tc-hours-hint" id="tcHoursHint">Calculated from clock in / out — you can override</div>
+      </div>
+      <div class="form-group">
+        <label for="tcEditNotes">Notes</label>
+        <textarea id="tcEditNotes" rows="2" placeholder="Optional"></textarea>
+      </div>
+    </div>
+    <button type="button" class="btn btn-outline" id="btnTcEditDelete">Delete entry</button>
+    <div class="btn-row tc-edit-bar">
+      <button type="button" class="btn btn-outline" id="btnTcEditCancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="btnTcEditSave">Save</button>
+    </div>
+  </div>
+
+  <div class="screen" id="screenSettings">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker">App</div>
+        <h2>Settings</h2>
+      </div>
+    </div>
+    <div class="storage-card" id="profileCard">
+      <button type="button" class="profile-toggle" id="profileToggle" aria-expanded="false">
+        <div>
+          <div class="storage-kicker">Profile</div>
+          <div class="profile-toggle-name" id="profileToggleName"></div>
+        </div>
+        <div class="profile-toggle-end">
+          <div id="profileQrThumb" class="profile-qr-thumb" hidden></div>
+          <span class="profile-chevron" aria-hidden="true"></span>
+        </div>
+      </button>
+      <div id="profileBody" class="profile-body" hidden>
+      <div class="form-group" style="margin:12px 0 10px">
+        <label>Name</label>
+        <input type="text" id="profileName" placeholder="Your name" autocomplete="name" />
+      </div>
+      <div class="form-group" style="margin:0 0 10px">
+        <label>Phone</label>
+        <input type="tel" id="profilePhone" placeholder="Phone" autocomplete="tel" />
+      </div>
+      <div class="form-group" style="margin:0 0 10px">
+        <label>Email</label>
+        <input type="email" id="profileEmail" placeholder="Email" autocomplete="email" />
+      </div>
+      <div class="form-group" style="margin:0 0 10px">
+        <label>Company</label>
+        <input type="text" id="profileCompany" placeholder="Company" autocomplete="organization" />
+      </div>
+      <div class="form-group" style="margin:0 0 10px">
+        <label>Company phone</label>
+        <input type="tel" id="profileCompanyPhone" placeholder="Company phone" autocomplete="tel" />
+      </div>
+      <div class="form-group" style="margin:0 0 10px">
+        <label>Company address</label>
+        <textarea id="profileCompanyAddress" placeholder="Company address" rows="2"></textarea>
+      </div>
+      <div class="form-group" style="margin:0">
+        <label>Company website</label>
+        <input type="url" id="profileWebsite" placeholder="https://" autocomplete="url" inputmode="url" />
+      </div>
+      <div id="profileQrWrap" class="profile-qr-wrap" hidden>
+        <div id="profileQr" aria-label="Contact QR code"></div>
+        <div class="profile-qr-hint">Tap code to enlarge</div>
+        <button type="button" class="btn btn-outline profile-share-btn" id="profileShareBtn">Share contact</button>
+      </div>
+      </div>
+    </div>
+    <div class="storage-card" id="themeCard">
+      <div class="storage-kicker">Appearance</div>
+      <div class="theme-toggle" role="group" aria-label="Theme">
+        <button type="button" class="theme-opt" id="themeDark" data-theme="dark">Dark</button>
+        <button type="button" class="theme-opt" id="themeLight" data-theme="light">Light</button>
+      </div>
+    </div>
+    <div class="storage-card" id="homeStorageCard">
+      <div class="storage-kicker">On this device</div>
+      <div class="storage-line" id="storageLine">Checking storage…</div>
+      <div class="storage-sub" id="storageSub">Reports and photos stay in the browser database.</div>
+      <div class="storage-bar" aria-hidden="true"><span id="storageBarFill"></span></div>
+      <div class="storage-actions">
+        <button type="button" class="btn" id="btnBackupZip">Backup</button>
+        <button type="button" class="btn" id="btnRestoreZip">Restore</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="screen" id="screenPunchlist">
+    <div class="pl-toolbar">
+      <div class="job-row">
+        <div class="job-selector-wrap">
+          <select class="job-selector" id="job-select" aria-label="Select job"></select>
+        </div>
+        <button type="button" class="btn btn-outline" id="btnPunchlistAllLists" title="All Lists" aria-label="All Lists" style="width:auto;padding:0 14px;height:40px;min-height:40px;line-height:40px;font-size:0.85rem;">All Lists</button>
+        <button type="button" class="btn btn-outline" id="btn-export" title="Export" aria-label="Export" style="width:auto;padding:0 14px;height:40px;min-height:40px;line-height:40px;font-size:0.85rem;">Export</button>
+      </div>
+      <div class="stats-row">
+        <button type="button" class="stat-chip" id="stat-open" data-filter="Not Started"><strong>0</strong> Open</button>
+        <button type="button" class="stat-chip" id="stat-progress" data-filter="In Progress"><strong>0</strong> In Progress</button>
+        <button type="button" class="stat-chip" id="stat-done" data-filter="Complete"><strong>0</strong> Done</button>
+        <div class="offline-badge" id="offline-badge">OFFLINE</div>
+        
+        <button type="button" class="filter-chip-btn" id="btn-filter" title="Filter" aria-label="Filter">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16"/><path d="M7 12h10"/><path d="M10 18h4"/></svg>
+          Filter
+        </button>
+      </div>
+      <div class="filter-count" id="filter-count"></div>
+    </div>
+    <div class="pl-list" id="item-list"></div>
+  </div>
+
+  
+  <div class="screen" id="screenPunchlistEdit">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker">Punchlist</div>
+        <h2 id="plEditHeading">Punchlist name</h2>
+      </div>
+    </div>
+    <div class="card">
+      <div class="form-group">
+        <label for="plEditName">Name</label>
+        <input type="text" id="plEditName" placeholder="Punchlist name" autocomplete="off" />
+      </div>
+      <div class="form-group">
+        <label for="plEditJob">Job</label>
+        <div class="job-selector-wrap">
+          <select class="job-selector" id="plEditJob" aria-label="Select job">
+            <option value="">Select job</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <button type="button" class="btn btn-outline pl-item-delete" id="plEditDelete">Delete punchlist</button>
+    <div class="btn-row">
+      <button type="button" class="btn btn-outline" id="plEditCancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="plEditSave">Save</button>
+    </div>
+  </div>
+
+  <div class="screen" id="screenInspectList">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker">Field service</div>
+        <h2>Inspections</h2>
+      </div>
+      <button class="btn btn-primary" id="btnNewInspection">+ Inspection</button>
+    </div>
+    <div class="card">
+      <div id="recentList">
+        <div class="empty-state">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="8" y="3.2" width="8" height="3.6" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="5.2" y="5.2" width="13.6" height="15.6" rx="2.4" stroke="currentColor" stroke-width="1.2"/><path d="M9 12h6M9 16h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></div>
+          <p>No inspections yet.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PUNCHLIST RECENT LIST -->
+  <div class="screen" id="screenPunchlistList">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker">Field service</div>
+        <h2>Punchlist</h2>
+      </div>
+      <button class="btn btn-primary" id="btnNewPunchlist">+ Punchlist</button>
+    </div>
+    <div class="card">
+      <div id="recentPunchlistList">
+        <div class="empty-state">
+          <div class="icon"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" aria-hidden="true"><rect x="4.2" y="3.2" width="15.6" height="17.6" rx="2.2" stroke="currentColor" stroke-width="0.9"/><path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/></svg></div>
+          <p>No punchlists yet.<br>Tap “+ Punchlist” to begin.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- JOBS LIST -->
+  <div class="screen" id="screenJobsList">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker">Field service</div>
+        <h2>Jobs</h2>
+      </div>
+    </div>
+    <div class="jobs-list" id="jobsList">
+      <div class="empty">
+        <div class="icon"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="7.5" width="17" height="12" rx="2.2" stroke="currentColor" stroke-width="1.2"/><path d="M8.5 7.5V6A1.5 1.5 0 0 1 10 4.5h4A1.5 1.5 0 0 1 15.5 6v1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M3.5 12.5h17" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M11 12.5v2.2h2v-2.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div>No jobs yet</div>
+        <div style="margin-top:8px;font-size:13px;opacity:0.8">Tap + to start a trip</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- JOB DETAIL (trip dashboard) -->
+  <div class="screen" id="screenJobDetail">
+    <div class="list-page-head job-detail-head">
+      <div class="job-detail-head-main">
+        <div class="list-page-kicker">Job</div>
+        <h2 id="jobDetailTitle">Job</h2>
+        <div class="job-detail-sub hidden" id="jobDetailSub"></div>
+      </div>
+      <button type="button" class="btn-edit" id="btnEditJobDetail">Edit</button>
+      <span class="badge hidden" id="jobDetailStatusBadge">Planned</span>
+    </div>
+
+    <div class="jd-action-tiles home-tiles">
+      <button type="button" class="home-tile" id="btnJobStartInspection">
+        <div class="home-tile-icon" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="8" y="3.2" width="8" height="3.6" rx="1" stroke="currentColor" stroke-width="0.9"/><rect x="5.2" y="5.2" width="13.6" height="15.6" rx="2.4" stroke="currentColor" stroke-width="0.9"/><path d="M9 12h6M9 16h4" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/></svg>
+        </div>
+        <div class="home-tile-title">+ Inspection</div>
+        <span id="jdInspectCount" class="hidden">None yet</span>
+      </button>
+      <button type="button" class="home-tile" id="btnJobOpenPunchlist">
+        <div class="home-tile-icon" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="4.2" y="3.2" width="15.6" height="17.6" rx="2.2" stroke="currentColor" stroke-width="0.9"/><path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/></svg>
+        </div>
+        <div class="home-tile-title">+ Punchlist</div>
+        <span id="jdPunchCount" class="hidden">None yet</span>
+      </button>
+      <button type="button" class="home-tile" id="jdHoursTile" style="grid-column:1/-1;">
+        <div class="home-tile-icon" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="0.9"/><path d="M12 7.5v5l3.2 2" stroke="currentColor" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="home-tile-title">Time Cards</div>
+        <span id="jdHoursValue">0.00 h</span>
+      </button>
+    </div>
+
+    <div class="card job-detail-progress-card" id="jobDetailProgressCard">
+      <div class="jd-progress-head">
+        <div>
+          <div class="jd-section-label">Job progress</div>
+          <div class="jd-progress-title" id="jdProgressTitle">Work in progress</div>
+        </div>
+        <div class="jd-progress-count" id="jdProgressCount">0 / 3</div>
+      </div>
+      <button type="button" class="jd-progress-row" id="jdProgressInspection">
+        <span class="jd-progress-icon" id="jdProgressInspectionIcon">○</span>
+        <span><b>Inspection</b><small id="jdProgressInspectionText">Not started</small></span>
+        <span class="jd-progress-arrow">›</span>
+      </button>
+      <button type="button" class="jd-progress-row" id="jdProgressPunchlist">
+        <span class="jd-progress-icon" id="jdProgressPunchlistIcon">○</span>
+        <span><b>Punchlist</b><small id="jdProgressPunchlistText">Not started</small></span>
+        <span class="jd-progress-arrow">›</span>
+      </button>
+      <button type="button" class="jd-progress-row" id="jdProgressTime">
+        <span class="jd-progress-icon" id="jdProgressTimeIcon">○</span>
+        <span><b>Time</b><small id="jdProgressTimeText">No hours recorded</small></span>
+        <span class="jd-progress-arrow">›</span>
+      </button>
+      <button type="button" class="btn-job-complete" id="btnCompleteJob">Complete Job</button>
+    </div>
+
+    <div class="card job-detail-summary" id="jobDetailSummaryCard">
+      <div class="jd-row"><span class="jd-label">Site</span><span class="jd-value" id="jdSite">—</span></div>
+      <div class="jd-row"><span class="jd-label">Contact</span><span class="jd-value" id="jdContact">—</span></div>
+      <div class="jd-row"><span class="jd-label">Technician</span><span class="jd-value" id="jdTech">—</span></div>
+      <div class="jd-row"><span class="jd-label">Dates</span><span class="jd-value" id="jdDates">—</span></div>
+      <div class="jd-row"><span class="jd-label">PO</span><span class="jd-value" id="jdPO">—</span></div>
+    </div>
+
+    <div class="card job-detail-scope hidden" id="jobDetailScopeCard">
+      <div class="jd-section-label">Scope of work</div>
+      <div class="jd-scope-text" id="jdScope"></div>
+      <div class="jd-notes-text hidden" id="jdNotes"></div>
+    </div>
+
+    <div class="jd-section-label jd-section-pad">Inspections</div>
+    <div class="card job-detail-list-card">
+      <div id="jobDetailInspectList">
+        <div class="empty-state compact"><p>No inspections linked yet.</p></div>
+      </div>
+    </div>
+
+    <div class="jd-section-label jd-section-pad">Punchlist</div>
+    <div class="card job-detail-list-card">
+      <div id="jobDetailPunchList">
+        <div class="empty-state compact"><p>No punchlist for this job yet.</p></div>
+      </div>
+    </div>
+
+    <div class="jd-section-label jd-section-pad">Time cards</div>
+    <div class="card job-detail-list-card">
+      <div id="jobDetailTimeList">
+        <div class="empty-state compact"><p>No time cards linked to this job yet.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- NEW / EDIT JOB SCREEN -->
+  <div class="screen" id="screenJobForm">
+    <div class="card">
+      <div class="form-group">
+        <div class="card-label-row">
+          <label for="jobCustomer">Customer</label>
+        </div>
+        <input type="text" id="jobCustomer" placeholder="e.g. ABC Bakery – Plant 2" list="jobCustomerList" />
+        <datalist id="jobCustomerList"></datalist>
+      </div>
+      <div class="form-group">
+        <label>Sales order (optional)</label>
+        <input type="text" id="jobSO" placeholder="Sales order #" />
+      </div>
+      <div class="form-group">
+        <label>Machine</label>
+        <select id="jobMachine">
+          <option value="LX-8">LX-8</option>
+          <option value="LX-7">LX-7</option>
+          <option value="LS-132">LS-132</option>
+          <option value="LS-133">LS-133</option>
+          <option value="__other">Other (type machine)</option>
+        </select>
+        <input type="text" id="jobMachineCustom" class="hidden" placeholder="Machine type" autocomplete="off" style="margin-top:8px" />
+      </div>
+      <div class="form-group">
+        <label>Serials · auto-tagged Line 1, 2, 3…</label>
+        <div id="jobSerialChips" class="job-serial-chips"></div>
+        <div class="job-serial-add">
+          <input type="text" id="jobSerialInput" placeholder="Add serial number" autocomplete="off" />
+          <button type="button" class="btn btn-outline" id="btnAddJobSerial">Add</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Site / Plant</label>
+        <input type="text" id="jobSite" placeholder="Plant, line, or site name" />
+      </div>
+      <div class="form-group">
+        <label>Contact</label>
+        <input type="text" id="jobContact" placeholder="On-site contact name" />
+      </div>
+      <div class="form-group">
+        <label>Technician Name</label>
+        <input type="text" id="jobTechnician" placeholder="Your name" />
+      </div>
+      <div class="form-row job-date-row">
+        <div class="form-group">
+          <label>Trip Start Date</label>
+          <input type="date" id="jobDate" />
+        </div>
+        <div class="form-group">
+          <label>Trip End Date</label>
+          <input type="date" id="jobEndDate" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label>PO Number (optional)</label>
+        <input type="text" id="jobPO" placeholder="Purchase order #" />
+      </div>
+      <div class="form-group">
+        <label>Status</label>
+        <select id="jobStatus">
+          <option value="Planned" selected>Planned</option>
+          <option value="In Progress">In Progress</option>
+          <option value="Complete">Complete</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="jobScope">Scope of Work (optional)</label>
+        <textarea id="jobScope" rows="6" placeholder="What will be done on this trip?"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Notes (optional)</label>
+        <textarea id="jobNotes" rows="3" placeholder="Travel notes, parts, special instructions…"></textarea>
+      </div>
+    </div>
+    <button type="button" class="btn btn-outline pl-item-delete hidden" id="btnDeleteJob">Delete job</button>
+    <div class="btn-row">
+      <button class="btn btn-outline" id="btnCancelJob" type="button">Cancel</button>
+      <button class="btn btn-primary" id="btnSaveJob" type="button">Save Job</button>
+    </div>
+  </div>
+
+  <!-- START INSPECTION SCREEN -->
+  <div class="screen" id="screenStart">
+    <div class="card">
+      <div class="form-group" id="jobLinkGroup">
+        <label for="inspectJobSelect">Linked job</label>
+        <select id="inspectJobSelect"></select>
+      </div>
+      <div class="form-group">
+        <div class="card-label-row">
+          <label for="inpCustomer">Customer</label>
+        </div>
+        <input type="text" id="inpCustomer" placeholder="e.g. ABC Bakery – Plant 2" list="customerList" />
+        <datalist id="customerList"></datalist>
+      </div>
+      <div class="form-group">
+        <label>Machine</label>
+        <select id="inpModel">
+          <option value="LX-8" selected>LX-8</option>
+          <option value="LX-7">LX-7</option>
+          <option value="LS-132">LS-132</option>
+          <option value="LS-133">LS-133</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Serial Number</label>
+        <input type="text" id="inpSerial" placeholder="Enter serial number" />
+      </div>
+      <div class="form-group">
+        <label>Technician Name</label>
+        <input type="text" id="inpTechnician" placeholder="Your name" />
+      </div>
+      <div class="form-group">
+        <label>Inspection Date</label>
+        <input type="date" id="inpDate" />
+      </div>
+      <div class="form-group">
+        <label>PO Number (optional)</label>
+        <input type="text" id="inpPO" placeholder="Purchase order #" />
+      </div>
+    </div>
+    <div class="card" id="exampleInspectCard">
+      <button class="btn btn-outline" id="btnLoadExampleInspection" type="button">Load example inspection</button>
+    </div>
+    <button type="button" class="btn btn-outline pl-item-delete hidden" id="btnDeleteInspection">Delete inspection</button>
+    <div class="btn-row">
+      <button class="btn btn-outline" id="btnCancelStart">Cancel</button>
+      <button class="btn btn-primary" id="btnBeginInspection">Begin Inspection</button>
+    </div>
+  </div>
+
+  <!-- SECTION NAV / INSPECTION SCREEN -->
+  <div class="screen" id="screenInspect">
+    <div style="padding:12px 16px 0;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-size:0.8rem;color:var(--muted)" id="sectionCounter">Section 1 of 12</div>
+        <div style="font-weight:700;font-size:1.15rem;color:#b8c3ca" id="sectionName">Spread Conveyor</div>
+      </div>
+      <div class="inspect-head-actions">
+        <div style="font-size:0.85rem;color:var(--muted);text-align:right" id="itemProgress">0 / 5</div>
+        <button type="button" class="btn-mark-rest" id="btnMarkRestGood">Section N/A</button>
+      </div>
+    </div>
+    <div id="itemsContainer"></div>
+    <div style="height:20px"></div>
+  </div>
+
+  <!-- FINDINGS -->
+  <div class="screen" id="screenFindings">
+    <div id="inspectInfoCard" class="inspect-info-card">
+      <div class="inspect-info-kicker">Field service trip report</div>
+      <div class="inspect-info-name" id="inspectInfoCustomer">—</div>
+      <div class="inspect-info-meta" id="inspectInfoMachine"></div>
+      <div class="inspect-info-meta" id="inspectInfoDate"></div>
+      <div id="summaryMeta" class="hidden"></div>
+    </div>
+    <div id="irPreviewSheet" class="visit-sheet hidden" hidden></div>
+
+    <div class="inspect-home-tiles">
+      <button type="button" class="home-tile" id="btnInspectHomeStart" onclick="window.startInspectFromHome && window.startInspectFromHome()">
+        <div class="home-tile-title">Start inspection</div>
+      </button>
+      <button type="button" class="home-tile inspect-count-tile" id="tileGood" data-filter="good" onclick="window.filterInspectHome && window.filterInspectHome('good')">
+        <div class="num" id="sumGood">0</div>
+        <div class="home-tile-title">Good</div>
+      </button>
+      <button type="button" class="home-tile inspect-count-tile" id="tileFair" data-filter="fair" onclick="window.filterInspectHome && window.filterInspectHome('fair')">
+        <div class="num" id="sumFair">0</div>
+        <div class="home-tile-title">Fair</div>
+      </button>
+      <button type="button" class="home-tile inspect-count-tile" id="tilePoor" data-filter="poor" onclick="window.filterInspectHome && window.filterInspectHome('poor')">
+        <div class="num" id="sumPoor">0</div>
+        <div class="home-tile-title">Poor</div>
+      </button>
+    </div>
+    <div class="stat-row hidden">
+      <div class="stat-card"><div class="num" id="sumTotalItems">0</div></div>
+      <div class="stat-card"><div class="num" id="sumFindings">0</div></div>
+    </div>
+    <div class="summary-section" id="inspectFilterSection">
+      <div class="summary-section-head">
+        <h3 id="inspectFilterTitle">Items</h3>
+      </div>
+      <div id="findingsList"></div>
+    </div>
+
+    <div class="summary-section" id="inspectNotesSection">
+      <div class="summary-section-head">
+        <h3>Notes</h3>
+      </div>
+          <div id="notesEditor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Notes"></div>
+    <textarea id="summaryNotes" class="hidden" aria-hidden="true"></textarea>
+    <div id="notesFormatBar" aria-label="Format">
+      <button type="button" data-notes-cmd="bold" title="Bold"><svg viewBox="0 0 24 24" fill="none"><path d="M7 5h7.2a3.6 3.6 0 0 1 0 7.2H7V5zm0 7.2h8a3.8 3.8 0 1 1 0 7.6H7v-7.6z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
+      <button type="button" data-notes-cmd="italic" title="Italic"><svg viewBox="0 0 24 24" fill="none"><path d="M10 5h9M5 19h9M14.5 5L9.5 19" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      <button type="button" data-notes-cmd="underline" title="Underline"><svg viewBox="0 0 24 24" fill="none"><path d="M7 5v7.2a5 5 0 0 0 10 0V5M6 19h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      <button type="button" data-notes-cmd="insertUnorderedList" title="Bulleted list"><svg viewBox="0 0 24 24" fill="none"><path d="M9 6h12M9 12h12M9 18h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="4.5" cy="6" r="1.35" fill="currentColor"/><circle cx="4.5" cy="12" r="1.35" fill="currentColor"/><circle cx="4.5" cy="18" r="1.35" fill="currentColor"/></svg></button>
+      <button type="button" data-notes-block="H1" title="Heading"><svg viewBox="0 0 24 24" fill="none"><path d="M4 6v12M12 6v12M4 12h8M16.2 19V9.2L19 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button type="button" data-notes-block="H2" title="Subheading"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7v10M11 7v10M4 12h7M15 12.2c.7-1 1.9-1.6 3.2-1.6 1.8 0 3 1.1 3 2.7 0 3.7-6.2 3.2-6.2 6.7H21.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button type="button" data-notes-block="P" title="Body"><svg viewBox="0 0 24 24" fill="none"><path d="M5 7h14M5 12h10M5 17h7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      <button type="button" data-notes-size="inc" title="Bigger text"><svg viewBox="0 0 24 24" fill="none"><path d="M3.5 18L8 6.5 12.5 18M5.2 14.2h5.6M16.5 10v8M12.5 14h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button type="button" data-notes-size="dec" title="Smaller text"><svg viewBox="0 0 24 24" fill="none"><path d="M4 18L7.8 8.5 11.6 18M5.4 14.4h4.4M13.5 14h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    </div>
+    <select id="overallCondition" class="hidden">
+      <option value="Good">Good</option>
+      <option value="Fair">Fair</option>
+      <option value="Needs Attention" selected>Needs Attention</option>
+      <option value="Critical">Critical</option>
+    </select>
+  </div>
+
+
+    </div>
+
+  </div>
+
+  <!-- NOTES -->
+  <div class="screen" id="screenNotes"></div>
+
+  <!-- PREVIEW -->
+  <div class="screen" id="screenInspectPreview"></div>
+
+  <!-- Delete confirm modal — Liquid Glass -->
+
+
+  <div id="jobDatesModal" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal machine-sheet" role="dialog">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <div class="modal-header"><h2>Trip dates</h2></div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Start date</label>
+          <input type="date" id="homeJobDateStart" />
+        </div>
+        <div class="form-group">
+          <label>End date</label>
+          <input type="date" id="homeJobDateEnd" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="jobDatesCancel" class="btn btn-outline">Cancel</button>
+        <button type="button" id="jobDatesSave" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+  <div id="machineModal" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal machine-sheet" role="dialog" aria-modal="true" aria-labelledby="machineModalTitle">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <div class="modal-header"><h2 id="machineModalTitle">Machine & serial</h2></div>
+      <div class="modal-body">
+        <div class="form-group hidden" id="inspectJobGroup">
+          <label>Job</label>
+          <div class="job-selector-wrap">
+            <select class="job-selector" id="inspectModalJobSelect" aria-label="Select job">
+              <option value="">Select job</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Machine</label>
+          <select id="inspectMachine">
+            <option value="LX-8">LX-8</option>
+            <option value="LX-7">LX-7</option>
+            <option value="LS-132">LS-132</option>
+            <option value="LS-133">LS-133</option>
+            <option value="__other">Other (type machine)</option>
+          </select>
+          <input type="text" id="inspectMachineCustom" class="hidden" placeholder="Machine type" autocomplete="off" style="margin-top:8px" />
+        </div>
+        <div class="form-group">
+          <label>Serial number</label>
+          <select id="inspectSerialSelect">
+            <option value="">Select serial</option>
+            <option value="__other">Other</option>
+          </select>
+          <input type="text" id="inspectSerialInput" class="hidden" placeholder="Type serial number" autocomplete="off" style="margin-top:8px" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="machineModalCancel" class="btn btn-outline">Cancel</button>
+        <button type="button" id="machineModalDone" class="btn btn-primary">Done</button>
+      </div>
+    </div>
+  </div>
+  
+  <div id="plStartSheet" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal machine-sheet" role="dialog" aria-modal="true" aria-labelledby="plStartTitle">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <div class="modal-header"><h2 id="plStartTitle">New punchlist</h2></div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="plStartName">Name</label>
+          <input type="text" id="plStartName" placeholder="Punchlist name" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="plStartJob">Job</label>
+          <div class="job-selector-wrap">
+            <select class="job-selector" id="plStartJob" aria-label="Select job">
+              <option value="">Select job</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="plStartCancel" class="btn btn-outline">Cancel</button>
+        <button type="button" id="plStartDone" class="btn btn-primary">Create punchlist</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="deleteModal" class="modal-backdrop hidden" aria-hidden="true">
+    <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="deleteModalTitle">
+      <div class="modal-title" id="deleteModalTitle">Delete inspection?</div>
+      <div class="modal-body" id="deleteModalLabel">This inspection report will be permanently deleted.</div>
+      <div class="modal-actions">
+        <button type="button" id="deleteModalCancel" class="btn btn-outline">Cancel</button>
+        <button type="button" id="deleteModalConfirm" class="btn btn-delete">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom bar for inspection -->
+  <div class="bottom-bar hidden" id="bottomBar">
+    <div class="bar-inspect hidden" id="barInspect">
+      <button class="btn btn-outline hidden" id="btnPrevSection">← Prev</button>
+      <button class="btn btn-primary hidden" id="btnNextSection">Next →</button>
+    </div>
+    <div class="bar-findings hidden" id="barFindings">
+      <button class="btn btn-outline" id="btnFindingsBack">Back</button>
+      <button class="btn btn-primary" id="btnFindingsNext">Save</button>
+    </div>
+    <div class="bar-notes hidden" id="barNotes">
+      <button class="btn btn-outline" id="btnNotesBack">Back</button>
+      <button class="btn btn-primary" id="btnNotesNext">Preview</button>
+    </div>
+    <div class="bar-preview hidden" id="barPreview">
+      <button class="btn btn-outline" id="btnPreviewBack">Back</button>
+      <button class="header-btn save-sheet-btn" id="btnSaveInspect" title="Save" aria-label="Save">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 3v12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          <path d="M8 7l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button class="btn btn-primary" id="btnCompleteInspect">Complete</button>
+    </div>
+  </div>
+
+  <div id="saveSheetScrim" class="save-sheet-scrim" hidden></div>
+<div id="tcWeekPickScrim" class="tc-week-pick-scrim" hidden></div>
+  <div id="tcWeekPickSheet" class="tc-week-pick-sheet" hidden>
+    <div class="tc-week-pick-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <div style="padding:4px 4px 10px;text-align:center;">
+        <div style="font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Select week</div>
+      </div>
+      <div id="tcWeekPickList" style="max-height:50vh;overflow-y:auto;-webkit-overflow-scrolling:touch;"></div>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="tcWeekPickCancel">Cancel</button>
+    </div>
+  </div>
+  <div id="tcExportScrim" class="tc-export-scrim" hidden></div>
+  <div id="tcExportSheet" class="save-sheet tc-export-sheet" hidden>
+    <div class="save-sheet-card tc-export-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <div class="modal-header tc-export-head">
+        <h2>Export</h2>
+        <p class="tc-export-sub">Select to export</p>
+      </div>
+      <div class="seg-control tc-export-tabs" id="tcExportSeg" data-mode="weeks" role="tablist" aria-label="Export selection">
+        <span class="seg-thumb" aria-hidden="true"></span>
+        <button type="button" class="seg-btn on" id="tcExportTabWeeks" data-mode="weeks" role="tab" aria-selected="true">Weeks</button>
+        <button type="button" class="seg-btn" id="tcExportTabDays" data-mode="days" role="tab" aria-selected="false">Days</button>
+      </div>
+      <div id="tcExportList" class="tc-export-list"></div>
+      <div id="tcExportSummary" class="tc-export-summary"></div>
+      <button type="button" class="btn btn-primary" id="tcExportContinue">Continue</button>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="tcExportCancel">Cancel</button>
+    </div>
+  </div>
+<div id="tcNameSheet" class="save-sheet" hidden>
+    <div class="save-sheet-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <div style="padding:4px 4px 12px;text-align:center;">
+        <div style="font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">Time card</div>
+        <div style="font-size:1.05rem;font-weight:650;margin-bottom:14px;">Name for export</div>
+        <div class="form-group" style="margin:0;text-align:left;">
+          <input type="text" id="tcExportNameInput" placeholder="Technician name" autocomplete="name" style="width:100%;min-height:48px;height:48px;padding:14px;font-size:1rem;border-radius:var(--radius-sm);border:1px solid rgba(249,253,255,0.08);background:#0d0d0f;color:var(--text);" />
+        </div>
+      </div>
+      <button type="button" class="btn btn-primary" id="tcNameSheetOk">Export</button>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="tcNameSheetCancel">Cancel</button>
+    </div>
+  </div>
+<div id="plExportSheet" class="save-sheet" hidden>
+    <div class="save-sheet-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <button type="button" class="btn btn-primary" id="plExportPdf">Save PDF</button>
+      <button type="button" class="btn btn-primary" id="plExportXlsx">Save Excel</button>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="plExportCancel">Cancel</button>
+    </div>
+  </div>
+  <div id="saveSheet" class="save-sheet" hidden>
+    <div class="save-sheet-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <button type="button" class="btn btn-primary" id="saveSheetPdf">Save PDF</button>
+      <button type="button" class="btn btn-primary" id="saveSheetDocx">Save Word</button>
+      <button type="button" class="btn btn-primary" id="saveSheetXlsx">Save Excel</button>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="saveSheetCancel">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Toast -->
+
+  <!-- Job picker (link inspection / punchlist to a job) -->
+  <div id="jobPickerModal" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal" id="jobPickerSheet" role="dialog" aria-modal="true" aria-labelledby="jobPickerTitle">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <div class="modal-header">
+        <h2 id="jobPickerTitle">Select Job</h2>
+      </div>
+      <div class="modal-body" id="jobPickerBody">
+        <div id="jobPickerList"></div>
+      </div>
+      <div class="job-picker-actions">
+        <button type="button" class="btn btn-outline" id="jobPickerCancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="jobPickerGoJobs">Go to Jobs</button>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="inspectCamInput" accept="image/*" class="inspect-cam-input" />
+  <button type="button" class="fab hidden" id="fab-inspect-cam" hidden title="Add photo" aria-label="Add photo" style="display:none">
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M4.8 8.2h2.1l1.15-1.7h7.9l1.15 1.7H19.2A1.8 1.8 0 0 1 21 10v8.2A1.8 1.8 0 0 1 19.2 20H4.8A1.8 1.8 0 0 1 3 18.2V10a1.8 1.8 0 0 1 1.8-1.8z" stroke="currentColor" stroke-width="1.8"/>
+      <circle cx="12" cy="14.1" r="3.05" stroke="currentColor" stroke-width="1.8"/>
+    </svg>
+  </button>
+  <button class="fab" id="fab-add" title="Add Item" aria-label="Add Item">
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+    </svg>
+  </button>
+  <div class="modal-overlay" id="pl-modal">
+    <div class="modal" id="modal-sheet">
+      <div class="modal-handle" id="modal-handle" aria-hidden="true"></div>
+      <div class="modal-header">
+        <h2 id="modal-title">Item</h2>
+        <label class="header-btn pl-header-camera" id="modal-camera" title="Add photo" aria-label="Add photo" style="display:none;position:relative;z-index:5">
+          <svg viewBox="0 0 30 24" width="30" height="24" fill="none" stroke="#000000" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5A2.5 2.5 0 0 1 6 6h3.1l1.15-1.7A1.4 1.4 0 0 1 11.4 3.7h7.2c.46 0 .88.22 1.14.58L20.9 6H24a2.5 2.5 0 0 1 2.5 2.5v9A2.5 2.5 0 0 1 24 20H6A2.5 2.5 0 0 1 3.5 17.5v-9z"/><circle cx="15" cy="13" r="3.5"/></svg>
+          <input type="file" accept="image/*" onchange="handlePhoto(event)">
+        </label>
+        <button type="button" class="header-btn" id="modal-trash" title="Delete" aria-label="Delete" style="display:none;position:relative;z-index:5">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M10 11v6M14 11v6"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="pl-photo-viewer" class="pl-photo-viewer" hidden aria-hidden="true" role="dialog" aria-label="Photo" onclick="closePunchlistPhoto(event)">
+    <button type="button" class="pl-photo-viewer-close" aria-label="Close photo" onclick="closePunchlistPhoto(event)">×</button>
+    <img id="pl-photo-viewer-img" alt="Full size photo" onclick="event.stopPropagation()">
+    <button type="button" class="pl-photo-viewer-trash" aria-label="Delete photo" onclick="event.stopPropagation(); requestDeleteViewerPhoto(event);">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 7h16"/>
+        <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+        <path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/>
+        <path d="M10 11v6M14 11v6"/>
+      </svg>
+    </button>
+  </div>
+
+  
+  <div id="profileQrViewer" class="profile-qr-viewer" hidden onclick="closeProfileQrViewer()">
+    <canvas id="profileQrViewerCanvas" onclick="event.stopPropagation()"></canvas>
+    <div class="profile-qr-viewer-hint">Scan to add contact</div>
+  </div>
+  
+  <div id="plLinkJobSheet" class="save-sheet" hidden>
+    <div class="save-sheet-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <div style="padding:4px 4px 12px;text-align:center;">
+        <div style="font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">Punchlist</div>
+        <div id="plLinkJobTitle" style="font-size:1.05rem;font-weight:650;margin-bottom:14px;">Link job</div>
+        <div class="form-group" style="margin:0;text-align:left;">
+          <label for="plLinkJobSelect">Job</label>
+          <select id="plLinkJobSelect"></select>
+        </div>
+      </div>
+      <button type="button" class="btn btn-outline" id="plLinkJobView" style="display:none;margin:0 0 10px;">View job details</button>
+      <div class="btn-row" style="position:static;padding:0 0 8px;background:transparent;box-shadow:none;">
+        <button type="button" class="btn btn-outline" id="plLinkJobCancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="plLinkJobSave">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="qrcode.min.js?v=64" defer></script>
+  <script src="templates.js?v=64" defer></script>
+  <script src="app.js?v=64" defer></script>
+</body>
+</html>
