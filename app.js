@@ -496,7 +496,8 @@ const ICO = {
       }
       // Header red glow only on home
       document.body.classList.toggle('on-home', id === 'screenHome');
-      document.body.classList.toggle('on-time', id === 'screenTime' || id === 'screenTimeEdit');
+      document.body.classList.toggle('on-time', id === 'screenTime' || id === 'screenTimeEdit' || id === 'screenTimePeriod');
+      document.body.classList.toggle('on-time-period', id === 'screenTimePeriod');
       document.body.classList.toggle('on-settings', id === 'screenSettings');
       document.body.classList.toggle('on-punchlist', id === 'screenPunchlist');
       document.body.classList.toggle('on-pl-edit', id === 'screenPunchlistEdit');
@@ -507,7 +508,7 @@ const ICO = {
       // to the actual previous screen via navHistory.
       const genericBackScreens = new Set([
         'screenJobsList', 'screenJobDetail', 'screenJobForm',
-        'screenInspectList', 'screenPunchlistList', 'screenPunchlistEdit'
+        'screenInspectList', 'screenPunchlistList', 'screenPunchlistEdit', 'screenTimePeriod'
       ]);
       document.body.classList.toggle('has-screen-back', genericBackScreens.has(id));
       const fab = document.getElementById('fab-add');
@@ -4335,6 +4336,8 @@ const ICO = {
         if (typeof tcRefresh === 'function') tcRefresh();
       } else if (previousId === 'screenTimeWeek') {
         if (typeof tcRenderWeekDetail === 'function') tcRenderWeekDetail();
+      } else if (previousId === 'screenTimePeriod') {
+        if (typeof tcRenderPeriodDetail === 'function') tcRenderPeriodDetail();
       }
     });
     document.getElementById('btnNotesNext').addEventListener('click', () => {
@@ -7654,6 +7657,7 @@ const IDB_NAME = "FieldPunchlistDB";
       entries: [],
       active: null,
       weekOffset: 0,
+      periodOffset: 0,
       editId: null,
       selectedType: 'bakery',
       tickTimer: null
@@ -8227,6 +8231,8 @@ function tcRenderEntryList(listEl, offset) {
       tcPopulateJobSelects();
       tcRenderStatus();
       tcRenderWeek();
+      tcRenderPeriodSummary();
+      if (document.getElementById('screenTimePeriod') && document.getElementById('screenTimePeriod').classList.contains('active')) tcRenderPeriodDetail();
     }
     function tcStartTick() {
       if (tcState.tickTimer) clearInterval(tcState.tickTimer);
@@ -8681,6 +8687,98 @@ function tcRenderEntryList(listEl, offset) {
       try { for (const ref of ['E32','F32','E33','F33','E34','F34','E35','F35']) ws.getCell(ref).border = box; } catch (e) {}
     }
 
+    function tcPeriodOffsets() {
+      const po = Number(tcState.periodOffset || 0);
+      return [po * 2 - 1, po * 2];
+    }
+    function tcPeriodLabel() {
+      const offs = tcPeriodOffsets();
+      const a = tcWeekBounds(offs[0]).start;
+      const b = tcWeekBounds(offs[1]).end;
+      const end = new Date(b.getTime() - 1);
+      const sameYear = a.getFullYear() === end.getFullYear();
+      const optsA = { month:'short', day:'numeric' };
+      const optsB = { month:'short', day:'numeric', year:'numeric' };
+      return a.toLocaleDateString(undefined, optsA) + ' – ' + end.toLocaleDateString(undefined, optsB);
+    }
+    function tcPeriodEntries() {
+      const offs = tcPeriodOffsets();
+      return tcExportEntriesForSelectedWeeks(new Set(offs));
+    }
+    function tcPeriodTotals() {
+      const entries = tcPeriodEntries();
+      let bakery=0, travel=0, shop=0;
+      entries.forEach(en => {
+        const h = tcEntryHours(en);
+        if (en.type === 'travel') travel += h;
+        else if (en.type === 'shop') shop += h;
+        else bakery += h;
+      });
+      return { bakery, travel, shop, total: bakery+travel+shop, entries };
+    }
+    function tcPeriodJobGroups(entries) {
+      const groups = new Map();
+      (entries || []).forEach(en => {
+        const key = en.jobId || ('name:' + (en.bakeryName || 'No job'));
+        const name = en.bakeryName || 'No job';
+        if (!groups.has(key)) groups.set(key, { name, hours:0, count:0 });
+        const g = groups.get(key); g.hours += tcEntryHours(en); g.count++;
+      });
+      return Array.from(groups.values()).sort((a,b)=>b.hours-a.hours);
+    }
+    function tcRenderPeriodSummary() {
+      const title=document.getElementById('tcPeriodTitle'), total=document.getElementById('tcPeriodTotal'), meta=document.getElementById('tcPeriodMeta'), jobsEl=document.getElementById('tcPeriodJobs');
+      const entries=tcPeriodEntries(), t=tcPeriodTotals(), jobs=tcPeriodJobGroups(entries);
+      if (title) title.textContent=tcPeriodLabel();
+      if (total) total.textContent=t.total.toFixed(2)+' h';
+      if (meta) meta.textContent=entries.length ? (entries.length+' time entr'+(entries.length===1?'y':'ies')+' · '+jobs.length+' '+(jobs.length===1?'job':'jobs')) : 'No time entered for this 2-week period';
+      if (jobsEl) jobsEl.innerHTML=jobs.length ? jobs.slice(0,4).map(g=>'<div class="tc-period-job"><span class="tc-period-job-name">'+jobEsc(g.name)+'</span><span class="tc-period-job-hours">'+g.hours.toFixed(2)+' h</span></div>').join('') : '';
+    }
+    function tcRenderPeriodDetail() {
+      const title=document.getElementById('tcPeriodDetailTitle'), nav=document.getElementById('tcPeriodNavLabel');
+      const t=tcPeriodTotals(), entries=t.entries;
+      if (title) title.textContent=tcPeriodLabel();
+      if (nav) nav.textContent=(Number(tcState.periodOffset||0)===0?'Current period':(Number(tcState.periodOffset||0)<0?'Previous period':'Next period'));
+      const set=(id,v)=>{const el=document.getElementById(id); if(el) el.textContent=v.toFixed(2);};
+      set('tcPeriodBakery',t.bakery); set('tcPeriodTravel',t.travel); set('tcPeriodShop',t.shop); set('tcPeriodAll',t.total);
+      const check=document.getElementById('tcPeriodCheck');
+      const active=!!tcState.active;
+      const noJob=entries.filter(e=>!e.jobId && (e.bakeryName||'')==='').length;
+      if(check){
+        const issues=[];
+        if(active) issues.push('A clock is currently running.');
+        if(!entries.length) issues.push('No time entries have been recorded.');
+        if(noJob) issues.push(noJob+' entr'+(noJob===1?'y has':'ies have')+' no job assigned.');
+        check.innerHTML=issues.length
+          ? '<div class="tc-period-check-card warn"><strong>Review needed</strong><div style="margin-top:4px;">'+issues.map(jobEsc).join('<br>')+'</div></div>'
+          : '<div class="tc-period-check-card good"><strong>Ready to review</strong><div style="margin-top:4px;">All '+entries.length+' entries are included in this period.</div></div>';
+      }
+      const list=document.getElementById('tcPeriodEntryList');
+      if(!list) return;
+      if(!entries.length){ list.innerHTML='<div style="padding:24px;text-align:center;color:var(--muted);">No time entries in this pay period</div>'; return; }
+      const byDay=new Map();
+      entries.forEach(en=>{ const d=en.date||tcDateKey(en.clockIn); if(!byDay.has(d)) byDay.set(d,[]); byDay.get(d).push(en); });
+      const days=Array.from(byDay.keys()).sort();
+      list.innerHTML=days.map(d=>{
+        const es=byDay.get(d); const hrs=es.reduce((a,e)=>a+tcEntryHours(e),0); const jobs=[...new Set(es.map(e=>e.bakeryName||'No job'))];
+        return '<div class="tc-period-day" data-period-date="'+d+'"><div class="tc-period-day-main"><div class="tc-period-day-title">'+jobEsc(tcFormatLongDate(d))+'</div><div class="tc-period-day-sub">'+jobEsc(jobs.join(' · '))+' · '+es.length+' entr'+(es.length===1?'y':'ies')+'</div></div><div class="tc-period-day-hours">'+hrs.toFixed(2)+' h</div></div>';
+      }).join('');
+      list.querySelectorAll('.tc-period-day').forEach(el=>el.addEventListener('click',()=>{
+        const d=el.getAttribute('data-period-date'); const en=entries.find(e=>(e.date||tcDateKey(e.clockIn))===d); if(en) tcOpenEdit(en.id);
+      }));
+    }
+    function tcOpenPeriod() {
+      tcLoad();
+      showScreen('screenTimePeriod');
+      document.body.classList.add('on-time-period');
+      document.body.classList.remove('on-time-week','on-time-edit');
+      tcRenderPeriodDetail();
+    }
+    function tcOpenPeriodExport() {
+      const offs=tcPeriodOffsets();
+      tcOpenExportSheet(offs);
+    }
+
     function tcCloseExportSheet() {
       const sheet = document.getElementById('tcExportSheet'), scrim = document.getElementById('tcExportScrim');
       if (sheet) { sheet.classList.remove('show'); sheet.hidden = true; sheet.setAttribute('hidden',''); }
@@ -8740,10 +8838,11 @@ function tcRenderEntryList(listEl, offset) {
       tcExportSummary();
     }
 
-    function tcOpenExportSheet() {
+    function tcOpenExportSheet(initialWeeks) {
       tcLoad();
       const current = tcState.weekOffset || 0;
-      tcExportSelection = { mode: 'weeks', weeks: new Set([current]), days: new Set() };
+      const seed = Array.isArray(initialWeeks) && initialWeeks.length ? initialWeeks.map(Number) : [current];
+      tcExportSelection = { mode: 'weeks', weeks: new Set(seed), days: new Set() };
       const sheet = document.getElementById('tcExportSheet'), scrim = document.getElementById('tcExportScrim');
       if (!sheet || !scrim) return;
       sheet.hidden = false; sheet.removeAttribute('hidden');
@@ -8888,6 +8987,11 @@ function tcRenderEntryList(listEl, offset) {
       once('btnTcAddManual', tcOpenManual);
       once('btnTcAddManualWeek', tcOpenManual);
       once('btnTcWeekExport', tcOpenExportSheet);
+      once('btnTcReviewPeriod', tcOpenPeriod);
+      once('btnTcPeriodExport', tcOpenPeriodExport);
+      once('btnTcPeriodAdd', tcOpenManual);
+      once('btnTcPeriodPrev', () => { tcState.periodOffset = (tcState.periodOffset || 0) - 1; tcRenderPeriodDetail(); });
+      once('btnTcPeriodNext', () => { tcState.periodOffset = (tcState.periodOffset || 0) + 1; tcRenderPeriodDetail(); });
       bindTcExportPicker();
       const weekHead = document.getElementById('tcWeekDetailHead');
       if (weekHead && weekHead.dataset.tcBound !== '1') {

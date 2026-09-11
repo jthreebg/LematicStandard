@@ -6118,3 +6118,37 @@
 .jd-progress-arrow { color:var(--muted); font-size:23px; line-height:1; }
 .btn-job-complete { width:100%; margin-top:12px; min-height:46px; border-radius:14px; border:1px solid var(--brand-red); background:var(--brand-red); color:#fff; font-weight:750; font-size:15px; }
 .btn-job-complete.is-complete { background:transparent; color:var(--text); border-color:var(--border-strong); }
+
+/* Standardized time / pay-period workflow */
+.tc-period-card { margin-top: 12px; }
+.tc-period-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.tc-period-title { font-size:1.05rem; font-weight:700; color:var(--text); margin-top:2px; }
+.tc-period-total { font-size:1.15rem; font-weight:750; white-space:nowrap; }
+.tc-period-meta { color:var(--muted); font-size:.82rem; margin:7px 0 10px; }
+.tc-period-jobs { display:flex; flex-direction:column; gap:7px; margin-bottom:12px; }
+.tc-period-job { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:9px 10px; border:1px solid rgba(255,255,255,.07); border-radius:10px; background:rgba(255,255,255,.025); }
+.tc-period-job-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.85rem; }
+.tc-period-job-hours { font-weight:700; font-size:.84rem; white-space:nowrap; }
+.tc-period-review { width:100%; }
+.tc-period-nav { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:4px 0 12px; }
+.tc-period-nav .btn { width:44px; min-width:44px; padding:0; }
+#tcPeriodNavLabel { text-align:center; font-weight:650; flex:1; }
+.tc-period-detail-totals { margin-bottom:12px; }
+.tc-period-check { margin-bottom:10px; }
+.tc-period-check-card { padding:11px 13px; border-radius:12px; border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.025); font-size:.83rem; }
+.tc-period-check-card.good { border-color:rgba(76,175,80,.25); }
+.tc-period-check-card.warn { border-color:rgba(255,170,0,.3); }
+.tc-period-day { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 2px; border-bottom:1px solid rgba(255,255,255,.06); }
+.tc-period-day:last-child { border-bottom:0; }
+.tc-period-day-main { min-width:0; }
+.tc-period-day-title { font-weight:650; }
+.tc-period-day-sub { color:var(--muted); font-size:.78rem; margin-top:3px; }
+.tc-period-day-hours { font-weight:750; white-space:nowrap; }
+html.theme-light .tc-period-job,
+html.theme-light .tc-period-check-card { border-color:rgba(17,24,39,.09); background:rgba(17,24,39,.025); }
+html.theme-light .tc-period-day { border-bottom-color:rgba(17,24,39,.08); }
+body.on-time-period #btnHeaderBack,
+body.on-time-period #btnSettings { display:none !important; }
+body.on-time-period #btnHome { display:none !important; }
+body.on-time-period .header-logo { cursor:pointer; }
+body.on-time-period .app-header { box-shadow:0 8px 24px rgba(0,0,0,.14); }
