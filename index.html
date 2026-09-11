@@ -181,70 +181,26 @@
       </div>
     </div>
 
-    <div class="tc-week-strip" id="tcWeekStrip"></div>
-
-    <div class="card tc-period-card" id="tcPeriodCard">
-      <div class="tc-period-head">
-        <div>
-          <div class="tc-status-kicker">Pay period</div>
-          <div class="tc-period-title" id="tcPeriodTitle">2-week period</div>
-        </div>
-        <div class="tc-period-total" id="tcPeriodTotal">0.00 h</div>
-      </div>
-      <div class="tc-period-meta" id="tcPeriodMeta">No time entered</div>
-      <div class="tc-period-jobs" id="tcPeriodJobs"></div>
-      <button type="button" class="btn btn-outline tc-period-review" id="btnTcReviewPeriod">Review 2-week period</button>
-    </div>
-
-    <div class="tc-footer-actions">
+    <div class="tc-footer-actions tc-main-actions">
+      <button type="button" class="btn btn-outline" id="btnTcRecords">Time Records</button>
       <button type="button" class="btn btn-outline" id="btnTcAddManual">Add hours</button>
     </div>
   </div>
 
   <div class="screen" id="screenTimeWeek">
     <div class="list-page-head">
-      <div id="tcWeekDetailHead" style="cursor:pointer;flex:1;min-width:0;">
-        <div class="list-page-kicker">Week</div>
-        <h2 id="tcWeekDetailTitle">Week</h2>
-        <select id="tcWeekSelect" aria-label="Select week" class="tc-week-select-native"></select>
+      <div>
+        <div class="list-page-kicker">Time</div>
+        <h2>Time Records</h2>
       </div>
-      <button type="button" class="btn btn-outline" id="btnTcWeekExport" style="width:auto;padding:0 14px;height:40px;min-height:40px;line-height:40px;font-size:0.85rem;">Export</button>
+      <button type="button" class="btn btn-outline" id="btnTcRecordsExport" style="width:auto;padding:0 14px;height:40px;min-height:40px;line-height:40px;font-size:0.85rem;">Export</button>
     </div>
-    <div class="tc-week-totals" id="tcWeekDetailTotals">
-      <span>Bakery<strong id="tcDetBakery">0.00</strong></span>
-      <span>Travel<strong id="tcDetTravel">0.00</strong></span>
-      <span>Shop<strong id="tcDetShop">0.00</strong></span>
-      <span class="tc-total-emph">Total<strong id="tcDetAll">0.00</strong></span>
+    <div class="card tc-records-search">
+      <input id="tcRecordsSearch" type="search" placeholder="Search bakery, job, date..." autocomplete="off" />
     </div>
-    <div id="tcEntryList" class="tc-entry-list"></div>
+    <div id="tcEntryList" class="tc-entry-list tc-records-list"></div>
     <div class="tc-footer-actions">
-      <button type="button" class="btn btn-outline" id="btnTcAddManualWeek">Add hours</button>
-    </div>
-  </div>
-
-  <div class="screen" id="screenTimePeriod">
-    <div class="list-page-head">
-      <div id="tcPeriodHead" style="cursor:pointer;flex:1;min-width:0;">
-        <div class="list-page-kicker">Pay period</div>
-        <h2 id="tcPeriodDetailTitle">2-week period</h2>
-      </div>
-      <button type="button" class="btn btn-outline" id="btnTcPeriodExport" style="width:auto;padding:0 14px;height:40px;min-height:40px;line-height:40px;font-size:0.85rem;">Export</button>
-    </div>
-    <div class="tc-period-nav">
-      <button type="button" class="btn btn-outline" id="btnTcPeriodPrev">‹</button>
-      <div id="tcPeriodNavLabel">Current period</div>
-      <button type="button" class="btn btn-outline" id="btnTcPeriodNext">›</button>
-    </div>
-    <div class="tc-week-totals tc-period-detail-totals">
-      <span>Bakery<strong id="tcPeriodBakery">0.00</strong></span>
-      <span>Travel<strong id="tcPeriodTravel">0.00</strong></span>
-      <span>Shop<strong id="tcPeriodShop">0.00</strong></span>
-      <span class="tc-total-emph">Total<strong id="tcPeriodAll">0.00</strong></span>
-    </div>
-    <div class="tc-period-check" id="tcPeriodCheck"></div>
-    <div id="tcPeriodEntryList" class="tc-entry-list"></div>
-    <div class="tc-footer-actions">
-      <button type="button" class="btn btn-outline" id="btnTcPeriodAdd">Add hours</button>
+      <button type="button" class="btn btn-outline" id="btnTcAddManualRecords">Add hours</button>
     </div>
   </div>
 
@@ -927,17 +883,6 @@
   </div>
 
   <div id="saveSheetScrim" class="save-sheet-scrim" hidden></div>
-<div id="tcWeekPickScrim" class="tc-week-pick-scrim" hidden></div>
-  <div id="tcWeekPickSheet" class="tc-week-pick-sheet" hidden>
-    <div class="tc-week-pick-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
-      <div style="padding:4px 4px 10px;text-align:center;">
-        <div style="font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Select week</div>
-      </div>
-      <div id="tcWeekPickList" style="max-height:50vh;overflow-y:auto;-webkit-overflow-scrolling:touch;"></div>
-      <button type="button" class="btn btn-outline save-sheet-cancel" id="tcWeekPickCancel">Cancel</button>
-    </div>
-  </div>
   <div id="tcExportScrim" class="tc-export-scrim" hidden></div>
   <div id="tcExportSheet" class="save-sheet tc-export-sheet" hidden>
     <div class="save-sheet-card tc-export-card">

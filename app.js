@@ -496,8 +496,8 @@ const ICO = {
       }
       // Header red glow only on home
       document.body.classList.toggle('on-home', id === 'screenHome');
-      document.body.classList.toggle('on-time', id === 'screenTime' || id === 'screenTimeEdit' || id === 'screenTimePeriod');
-      document.body.classList.toggle('on-time-period', id === 'screenTimePeriod');
+      document.body.classList.toggle('on-time', id === 'screenTime' || id === 'screenTimeEdit' || id === 'screenTimeWeek');
+      document.body.classList.toggle('on-time-period', false);
       document.body.classList.toggle('on-settings', id === 'screenSettings');
       document.body.classList.toggle('on-punchlist', id === 'screenPunchlist');
       document.body.classList.toggle('on-pl-edit', id === 'screenPunchlistEdit');
@@ -508,7 +508,7 @@ const ICO = {
       // to the actual previous screen via navHistory.
       const genericBackScreens = new Set([
         'screenJobsList', 'screenJobDetail', 'screenJobForm',
-        'screenInspectList', 'screenPunchlistList', 'screenPunchlistEdit', 'screenTimePeriod'
+        'screenInspectList', 'screenPunchlistList', 'screenPunchlistEdit', 'screenTimeWeek'
       ]);
       document.body.classList.toggle('has-screen-back', genericBackScreens.has(id));
       const fab = document.getElementById('fab-add');
@@ -4263,7 +4263,6 @@ const ICO = {
         if (has('jobPickerModal')) { closeJobPicker(); closed = true; }
         if (has('plExportSheet')) { closePlExportSheet(); closed = true; }
         if (has('saveSheet')) { closeSaveSheet(); closed = true; }
-        if (has('tcWeekPickSheet')) { tcCloseWeekPick(); closed = true; }
         if (has('tcExportSheet')) { tcCloseExportSheet(); closed = true; }
         if (has('plLinkJobSheet')) { closePunchlistLinkSheet(); closed = true; }
         if (has('tcNameSheet')) {
@@ -4335,9 +4334,7 @@ const ICO = {
         setHeader('Time Cards');
         if (typeof tcRefresh === 'function') tcRefresh();
       } else if (previousId === 'screenTimeWeek') {
-        if (typeof tcRenderWeekDetail === 'function') tcRenderWeekDetail();
-      } else if (previousId === 'screenTimePeriod') {
-        if (typeof tcRenderPeriodDetail === 'function') tcRenderPeriodDetail();
+        if (typeof tcRenderRecords === 'function') tcRenderRecords();
       }
     });
     document.getElementById('btnNotesNext').addEventListener('click', () => {
@@ -7657,7 +7654,6 @@ const IDB_NAME = "FieldPunchlistDB";
       entries: [],
       active: null,
       weekOffset: 0,
-      periodOffset: 0,
       editId: null,
       selectedType: 'bakery',
       tickTimer: null
@@ -8056,525 +8052,61 @@ const IDB_NAME = "FieldPunchlistDB";
       }
     }
     function tcRenderWeek() {
-      tcRenderWeekStrip();
-      if (document.getElementById('screenTimeWeek') && document.getElementById('screenTimeWeek').classList.contains('active')) {
-        tcRenderWeekDetail();
+      tcRenderRecords();
+    }
+    function tcFormatRecordDate(dateKey) {
+      const d = new Date(String(dateKey || '') + 'T12:00:00');
+      return isNaN(d.getTime()) ? (dateKey || '') : d.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
+    }
+    function tcRenderRecords() {
+      const list = document.getElementById('tcEntryList');
+      if (!list) return;
+      const searchEl = document.getElementById('tcRecordsSearch');
+      const q = String(searchEl ? searchEl.value : '').trim().toLowerCase();
+      let entries = (tcState.entries || []).slice().sort((a,b) => {
+        const da = a.date || tcDateKey(a.clockIn || 0);
+        const db = b.date || tcDateKey(b.clockIn || 0);
+        return db.localeCompare(da) || ((b.clockIn||0) - (a.clockIn||0));
+      });
+      if (q) {
+        entries = entries.filter(en => {
+          const d = en.date || tcDateKey(en.clockIn || 0);
+          const hay = [d, tcFormatRecordDate(d), en.bakeryName || '', en.type || '', en.notes || ''].join(' ').toLowerCase();
+          return hay.includes(q);
+        });
       }
-    }
-    function tcWeekLabelText(offset) {
-      const { start, end } = tcWeekBounds(offset);
-      const opts = { month: 'short', day: 'numeric' };
-      return start.toLocaleDateString(undefined, opts) + ' – ' + new Date(end - 1).toLocaleDateString(undefined, opts);
-    }
-    function tcWeekTotals(offset) {
-      const entries = tcEntriesForWeek(offset);
-      let bakery = 0, travel = 0, shop = 0;
-      entries.forEach(en => {
-        const h = tcEntryHours(en);
-        if (en.type === 'travel') travel += h;
-        else if (en.type === 'shop') shop += h;
-        else bakery += h;
-      });
-      return { bakery, travel, shop, total: bakery + travel + shop, count: entries.length };
-    }
-    function tcRenderWeekStrip() {
-      const strip = document.getElementById('tcWeekStrip');
-      if (!strip) return;
-      const fmt = n => (Math.round(n * 100) / 100).toFixed(2);
-      const off = tcState.weekOffset || 0;
-      const t = tcWeekTotals(off);
-      const label = tcWeekLabelText(off);
-      const kicker = off === 0 ? 'This week' : (off === -1 ? 'Last week' : (off === 1 ? 'Next week' : 'Week'));
-      strip.innerHTML =
-        '<div class="tc-week-card" id="tcWeekCardMain" data-offset="' + off + '">' +
-          '<div class="tc-week-kicker">' + kicker + '</div>' +
-          '<div class="tc-week-label">' + label + '</div>' +
-          '<div class="tc-week-totals">' +
-            '<span>Bakery<strong>' + fmt(t.bakery) + '</strong></span>' +
-            '<span>Travel<strong>' + fmt(t.travel) + '</strong></span>' +
-            '<span>Shop<strong>' + fmt(t.shop) + '</strong></span>' +
-            '<span>Total<strong>' + fmt(t.total) + '</strong></span>' +
-          '</div>' +
-          '<div class="tc-week-hint">' + (t.count ? (t.count + ' entr' + (t.count === 1 ? 'y' : 'ies')) : 'No entries') + '</div>' +
-        '</div>';
-      const card = document.getElementById('tcWeekCardMain');
-      if (!card) return;
-      card.addEventListener('click', () => {
-        // Always open the week actually displayed on this card. Do not use the
-        // mutable global weekOffset here because it can be changed by the picker
-        // without the card having been re-rendered yet.
-        const displayedOffset = parseInt(card.getAttribute('data-offset'), 10);
-        tcOpenWeek(Number.isFinite(displayedOffset) ? displayedOffset : (tcState.weekOffset || 0));
-      });
-      let sx = 0, sy = 0, tracking = false;
-      const onStart = (x, y) => { sx = x; sy = y; tracking = true; };
-      const onEnd = (x, y) => {
-        if (!tracking) return;
-        tracking = false;
-        const dx = x - sx, dy = y - sy;
-        if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy)) return;
-        if (dx < 0) tcState.weekOffset = (tcState.weekOffset || 0) + 1;
-        else tcState.weekOffset = (tcState.weekOffset || 0) - 1;
-        tcRenderWeekStrip();
-      };
-      card.addEventListener('touchstart', (e) => {
-        if (!e.changedTouches || !e.changedTouches[0]) return;
-        onStart(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
-      }, { passive: true });
-      card.addEventListener('touchend', (e) => {
-        if (!e.changedTouches || !e.changedTouches[0]) return;
-        onEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
-      }, { passive: true });
-    }
-function tcRenderEntryList(listEl, offset) {
-      if (!listEl) return;
-      const entries = tcEntriesForWeek(offset);
       if (!entries.length) {
-        listEl.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);">No time entries this week</div>';
+        list.innerHTML = '<div style="padding:28px;text-align:center;color:var(--muted);">' + (q ? 'No matching time records' : 'No time records yet') + '</div>';
         return;
       }
-      listEl.innerHTML = entries.map(en => {
+      let lastDate = '';
+      let html = '';
+      entries.forEach(en => {
+        const d = en.date || tcDateKey(en.clockIn || 0);
+        if (d !== lastDate) {
+          html += '<div class="tc-record-date">' + jobEsc(tcFormatRecordDate(d)) + '</div>';
+          lastDate = d;
+        }
         const h = tcEntryHours(en);
         const open = tcState.active && tcState.active.id === en.id && !en.clockOut;
-        const capped = tcWasAutoCapped(en);
         const typeLabel = (en.type || 'bakery').charAt(0).toUpperCase() + (en.type || 'bakery').slice(1);
-        const dateStr = tcFormatLongDate(en.date || en.clockIn);
-        return '<div class="tc-entry' + (open ? ' open-shift' : '') + '" data-id="' + en.id + '">' +
-          '<div class="tc-entry-main"><div class="tc-entry-title">' + String(dateStr).replace(/</g,'&lt;') + '</div>' +
-          '<div class="tc-entry-sub">' + typeLabel + '</div></div>' +
+        const job = en.bakeryName || 'No job';
+        const time = en.clockIn ? new Date(en.clockIn).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}) : '';
+        const out = en.clockOut ? new Date(en.clockOut).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}) : 'Running';
+        html += '<div class="tc-entry' + (open ? ' open-shift' : '') + '" data-id="' + en.id + '">' +
+          '<div class="tc-entry-main"><div class="tc-entry-title">' + jobEsc(job) + '</div>' +
+          '<div class="tc-entry-sub">' + jobEsc(typeLabel) + (time ? ' · ' + jobEsc(time + ' – ' + out) : '') + '</div></div>' +
           '<div class="tc-entry-hours">' + h.toFixed(2) + '</div></div>';
-      }).join('');
-      listEl.querySelectorAll('.tc-entry').forEach(el => {
-        el.addEventListener('click', () => tcOpenEdit(el.getAttribute('data-id')));
       });
-    }
-    function tcRenderWeekDetail() {
-      const title = document.getElementById('tcWeekDetailTitle');
-      if (title) title.textContent = tcWeekLabelText(tcState.weekOffset);
-      const sel = document.getElementById('tcWeekSelect');
-      if (sel) {
-        const cur = String(tcState.weekOffset || 0);
-        let opts = '';
-        for (let off = -8; off <= 4; off++) {
-          const label = tcWeekLabelText(off);
-          const kicker = off === 0 ? 'This week' : (off === -1 ? 'Last week' : (off === 1 ? 'Next week' : 'Week'));
-          opts += '<option value="' + off + '"' + (String(off) === cur ? ' selected' : '') + '>' +
-            kicker + ' · ' + label + '</option>';
-        }
-        sel.innerHTML = opts;
-        sel.value = cur;
-      }
-      const t = tcWeekTotals(tcState.weekOffset);
-      const fmt = n => (Math.round(n * 100) / 100).toFixed(2);
-      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = fmt(v); };
-      set('tcDetBakery', t.bakery);
-      set('tcDetTravel', t.travel);
-      set('tcDetShop', t.shop);
-      set('tcDetAll', t.total);
-      tcRenderEntryList(document.getElementById('tcEntryList'), tcState.weekOffset);
-    }
-
-    function tcCloseWeekPick() {
-      const sheet = document.getElementById('tcWeekPickSheet');
-      const scrim = document.getElementById('tcWeekPickScrim');
-      if (sheet) {
-        sheet.classList.remove('show');
-        sheet.hidden = true;
-        sheet.setAttribute('hidden', '');
-      }
-      if (scrim) {
-        scrim.classList.remove('show');
-        scrim.hidden = true;
-        scrim.setAttribute('hidden', '');
-      }
-    }
-    function tcOpenWeekPick() {
-      const sheet = document.getElementById('tcWeekPickSheet');
-      const list = document.getElementById('tcWeekPickList');
-      const scrim = document.getElementById('tcWeekPickScrim');
-      if (!sheet || !list) return;
-      let html = '';
-      for (let off = -8; off <= 4; off++) {
-        const label = tcWeekLabelText(off);
-        const kicker = off === 0 ? 'This week' : (off === -1 ? 'Last week' : (off === 1 ? 'Next week' : 'Week'));
-        const on = off === (tcState.weekOffset || 0) ? ' on' : '';
-        html += '<button type="button" class="tc-week-pick-item' + on + '" data-offset="' + off + '">' +
-          kicker + '<span class="sub">' + label + '</span></button>';
-      }
       list.innerHTML = html;
-      list.querySelectorAll('.tc-week-pick-item').forEach(btn => {
-        btn.addEventListener('click', () => {
-          tcState.weekOffset = parseInt(btn.getAttribute('data-offset'), 10) || 0;
-          tcCloseWeekPick();
-          tcRenderWeekDetail();
-        });
-      });
-      if (scrim) {
-        scrim.hidden = false;
-        scrim.removeAttribute('hidden');
-        scrim.classList.add('show');
-      }
-      sheet.hidden = false;
-      sheet.removeAttribute('hidden');
-      sheet.classList.add('show');
+      list.querySelectorAll('.tc-entry').forEach(el => el.addEventListener('click', () => tcOpenEdit(el.getAttribute('data-id'))));
     }
-
-    function tcOpenWeek(offset) {
-      tcState.weekOffset = offset;
+    function tcOpenRecords() {
+      tcLoad();
       showScreen('screenTimeWeek');
-      document.body.classList.add('on-time-week');
-      document.body.classList.remove('on-time', 'on-home');
-      tcRenderWeekDetail();
-    }
-
-    function tcRefresh() {
-      tcPopulateJobSelects();
-      tcRenderStatus();
-      tcRenderWeek();
-      tcRenderPeriodSummary();
-      if (document.getElementById('screenTimePeriod') && document.getElementById('screenTimePeriod').classList.contains('active')) tcRenderPeriodDetail();
-    }
-    function tcStartTick() {
-      if (tcState.tickTimer) clearInterval(tcState.tickTimer);
-      tcState.tickTimer = setInterval(() => {
-        const sc = document.getElementById('screenTime');
-        if (sc && sc.classList.contains('active')) {
-          tcRenderStatus();
-          if (tcState.active) tcRenderWeek();
-        }
-      }, 15000);
-    }
-    function tcClockIn() {
-      tcEnsureActiveClosedIfNeeded();
-      if (tcState.active) { toast('Already clocked in'); return; }
-      const jobSel = document.getElementById('tcJobSelect');
-      let jobId = jobSel ? jobSel.value : '';
-      if (!jobId) {
-        const auto = tcFindJobForToday();
-        if (auto) {
-          jobId = auto.id;
-          if (jobSel) jobSel.value = jobId;
-        }
-      }
-      const bakeryName = tcBakeryNameForJob(jobId);
-      const id = tcUid();
-      const clockIn = Date.now();
-      const entry = {
-        id, clockIn, clockOut: null,
-        type: tcState.selectedType || 'bakery',
-        jobId: jobId || '',
-        bakeryName: bakeryName || '',
-        date: tcDateKey(clockIn),
-        notes: '',
-        manualHours: null,
-        autoCapped: false
-      };
-      tcState.entries.push(entry);
-      tcState.active = { id, clockIn, type: entry.type, jobId: entry.jobId, bakeryName: entry.bakeryName };
-      tcSave();
-      tcRefresh();
-      toast('Clocked in');
-    }
-    function tcClockOut() {
-      if (!tcState.active) { toast('Not clocked in'); return; }
-      const entry = tcState.entries.find(e => e.id === tcState.active.id);
-      const out = Math.min(Date.now(), tcState.active.clockIn + TC_MAX_MS);
-      if (entry) {
-        entry.clockOut = out;
-        if (out >= tcState.active.clockIn + TC_MAX_MS - 1000) entry.autoCapped = true;
-      }
-      tcState.active = null;
-      tcSave();
-      tcRefresh();
-      toast('Clocked out');
-    }
-
-    let tcHoursManualOverride = false;
-    function tcRecalcHoursFromTimes() {
-      if (tcHoursManualOverride) return;
-      const cin = document.getElementById('tcEditClockIn');
-      const cout = document.getElementById('tcEditClockOut');
-      const hoursEl = document.getElementById('tcEditHours');
-      const hint = document.getElementById('tcHoursHint');
-      if (!cin || !cout || !hoursEl) return;
-      if (!cin.value || !cout.value) {
-        if (hint) hint.textContent = 'Enter clock in and out to calculate hours, or type hours directly';
-        return;
-      }
-      const dateEl = document.getElementById('tcEditDate');
-      const baseDate = (dateEl && dateEl.value) ? dateEl.value : tcDateKey(Date.now());
-      const parseTime = (value) => {
-        const m = String(value || '').match(/^(\d{2}):(\d{2})$/);
-        if (!m) return NaN;
-        return new Date(baseDate + 'T' + m[1] + ':' + m[2] + ':00').getTime();
-      };
-      const a = parseTime(cin.value);
-      let b = parseTime(cout.value);
-      if (!isNaN(a) && !isNaN(b) && b < a) b += 24 * 3600000;
-      if (isNaN(a) || isNaN(b) || b <= a) {
-        if (hint) hint.textContent = 'Clock out must be after clock in';
-        return;
-      }
-      let ms = b - a;
-      if (ms > TC_MAX_MS) ms = TC_MAX_MS;
-      const h = Math.round((ms / 3600000) * 100) / 100;
-      hoursEl.value = h;
-      if (hint) {
-        hint.textContent = ms >= TC_MAX_MS
-          ? 'Capped at 24 hours — you can still override'
-          : 'Calculated from clock in / out — you can override';
-      }
-    }
-
-    function tcOpenEdit(id) {
-      const entry = tcState.entries.find(e => e.id === id);
-      if (!entry) return;
-      tcState.editId = id;
-      tcHoursManualOverride = false;
-      try {
-        const del = document.getElementById('btnTcEditDelete');
-        if (del && del.dataset.delBound !== '1') {
-          del.dataset.delBound = '1';
-          del.addEventListener('click', (e) => { e.preventDefault(); tcDeleteEdit(e); });
-        }
-      } catch (e) {}
-      document.getElementById('tcEditTitle').textContent = 'Edit hours';
-      const editScreen = document.getElementById('screenTimeEdit');
-      if (editScreen) editScreen.classList.remove('add-mode');
-      document.getElementById('tcEditDate').value = entry.date || tcDateKey(entry.clockIn || Date.now());
-      document.getElementById('tcEditType').value = entry.type || 'bakery';
-      document.getElementById('tcEditJob').innerHTML = tcJobOptionsHtml(entry.jobId || '');
-      document.getElementById('tcEditHours').value = tcEntryHours(entry);
-      const toTime = (ms) => {
-        if (!ms) return '';
-        const d = new Date(ms);
-        return tcPad(d.getHours()) + ':' + tcPad(d.getMinutes());
-      };
-      document.getElementById('tcEditClockIn').value = toTime(entry.clockIn);
-      document.getElementById('tcEditClockOut').value = toTime(entry.clockOut);
-      document.getElementById('tcEditNotes').value = entry.notes || '';
-      showScreen('screenTimeEdit');
-      document.body.classList.add('on-time-edit');
-      document.body.classList.remove('on-time', 'on-time-week');
-    }
-    function tcOpenManual() {
-      tcState.editId = null;
-      tcHoursManualOverride = false;
-      document.getElementById('tcEditTitle').textContent = 'Add hours';
-      const editScreen = document.getElementById('screenTimeEdit');
-      if (editScreen) editScreen.classList.add('add-mode');
-      document.getElementById('tcEditDate').value = tcDateKey(new Date());
-      document.getElementById('tcEditType').value = tcState.selectedType || 'bakery';
-      const auto = tcFindJobForToday();
-      document.getElementById('tcEditJob').innerHTML = tcJobOptionsHtml(auto ? auto.id : '');
-      document.getElementById('tcEditHours').value = '8';
-      // Default workday times for new entries. These are time-only controls;
-      // the Date field remains the single calendar-date source of truth.
-      document.getElementById('tcEditClockIn').value = '08:00';
-      document.getElementById('tcEditClockOut').value = '18:00';
-      document.getElementById('tcEditHours').value = '10';
-      document.getElementById('tcEditNotes').value = '';
-      showScreen('screenTimeEdit');
-      document.body.classList.add('on-time-edit');
-      document.body.classList.remove('on-time', 'on-time-week');
-    }
-    function tcSaveEdit() {
-      const date = document.getElementById('tcEditDate').value;
-      const type = document.getElementById('tcEditType').value || 'bakery';
-      const jobId = document.getElementById('tcEditJob').value || '';
-      const bakeryName = jobId ? tcBakeryNameForJob(jobId) : '';
-      const hoursVal = parseFloat(document.getElementById('tcEditHours').value);
-      const notes = document.getElementById('tcEditNotes').value || '';
-      const cinStr = document.getElementById('tcEditClockIn').value;
-      const coutStr = document.getElementById('tcEditClockOut').value;
-      const manualHours = (!isNaN(hoursVal)) ? Math.max(0, Math.min(24, hoursVal)) : null;
-      let clockIn = null;
-      let clockOut = null;
-      // The entry Date is the single source of truth for the calendar date.
-      // Clock in/out fields contain time only, so changing a time can never
-      // silently change the entry's date.
-      const baseDate = date || tcDateKey(Date.now());
-      const timeOnDate = (timeStr, fallbackHour) => {
-        if (!timeStr) return null;
-        const m = String(timeStr).match(/^(\d{2}):(\d{2})$/);
-        if (!m) return null;
-        const d = new Date(baseDate + 'T' + m[1] + ':' + m[2] + ':00');
-        return isNaN(d.getTime()) ? null : d.getTime();
-      };
-      if (cinStr) clockIn = timeOnDate(cinStr, 8);
-      if (coutStr) clockOut = timeOnDate(coutStr, 0);
-      // If clock-out is earlier than clock-in, treat it as the following day.
-      // This keeps overnight entries possible while still having one displayed Date.
-      if (clockIn && clockOut && clockOut < clockIn) clockOut += 24 * 3600000;
-      // Manual hours only (no clock times): store hours without fabricating clock range
-      if (manualHours != null && tcHoursManualOverride && !cinStr && !coutStr) {
-        clockIn = date ? new Date(date + 'T12:00:00').getTime() : Date.now();
-        clockOut = null;
-      } else {
-        if (!clockIn) clockIn = date ? new Date(date + 'T08:00:00').getTime() : Date.now();
-        if (clockOut && clockOut - clockIn > TC_MAX_MS) clockOut = clockIn + TC_MAX_MS;
-        if (manualHours != null && !coutStr && !tcHoursManualOverride) {
-          clockOut = clockIn + Math.round(manualHours * 3600000);
-          if (clockOut - clockIn > TC_MAX_MS) clockOut = clockIn + TC_MAX_MS;
-        }
-      }
-      if (tcState.editId) {
-        const entry = tcState.entries.find(e => e.id === tcState.editId);
-        if (entry) {
-          entry.date = date || tcDateKey(clockIn);
-          entry.type = type;
-          entry.jobId = jobId;
-          entry.bakeryName = bakeryName;
-          entry.notes = notes;
-          entry.clockIn = clockIn;
-          entry.clockOut = clockOut;
-          entry.manualHours = manualHours;
-          if (tcState.active && tcState.active.id === entry.id) {
-            if (clockOut) tcState.active = null;
-            else tcState.active = { id: entry.id, clockIn: entry.clockIn, type: entry.type, jobId: entry.jobId, bakeryName: entry.bakeryName };
-          }
-        }
-      } else {
-        const id = tcUid();
-        tcState.entries.push({
-          id, date: date || tcDateKey(clockIn), type, jobId, bakeryName, notes,
-          clockIn, clockOut: clockOut || (clockIn + (manualHours != null ? Math.round(manualHours * 3600000) : 0)),
-          manualHours, autoCapped: false
-        });
-      }
-      tcSave();
-      showScreen('screenTimeWeek');
-      document.body.classList.add('on-time-week');
-      document.body.classList.remove('on-time-edit');
-      tcRenderWeekDetail();
-      toast('Saved');
-      try { if (typeof refreshJobDetail === 'function' && detailJobId) refreshJobDetail(); } catch (e) {}
-    }
-    function tcDeleteEdit(ev) {
-      if (ev) { ev.preventDefault(); ev.stopPropagation(); }
-      const id = tcState.editId || (tcState.active && tcState.active.id) || '';
-      if (!id) {
-        toast('No time entry to delete');
-        return;
-      }
-      if (typeof showDeleteConfirm === 'function') {
-        showDeleteConfirm(id, 'timecard', 'Delete time entry?', 'This time entry will be permanently deleted.');
-      } else {
-        pendingDeleteId = id;
-        pendingDeleteKind = 'timecard';
-        const modal = document.getElementById('deleteModal');
-        if (modal) {
-          document.getElementById('deleteModalTitle').textContent = 'Delete time entry?';
-          document.getElementById('deleteModalLabel').textContent = 'This time entry will be permanently deleted.';
-          modal.classList.remove('hidden');
-          modal.classList.add('show');
-          modal.style.display = 'flex';
-          modal.style.zIndex = '30000';
-        }
-      }
-    }
-    function performDeleteTimecard(id) {
-      if (!id) { closeDeleteModal(); return; }
-      const sid = String(id);
-      tcState.entries = (tcState.entries || []).filter(e => String(e.id) !== sid);
-      if (tcState.active && tcState.active.id === id) tcState.active = null;
-      if (tcState.editId === id) tcState.editId = null;
-      tcSave();
-      closeDeleteModal();
-      showScreen('screenTimeWeek');
-      document.body.classList.add('on-time-week');
-      document.body.classList.remove('on-time-edit');
-      tcRenderWeekDetail();
-      toast('Deleted');
-    }
-    window.performDeleteTimecard = performDeleteTimecard;
-    window.tcDeleteEdit = tcDeleteEdit;
-
-    function tcCloseNameSheet() {
-      const sheet = document.getElementById('tcNameSheet');
-      if (!sheet) return;
-      sheet.classList.remove('show');
-      sheet.hidden = true;
-      sheet.setAttribute('hidden', '');
-    }
-    function tcOpenNameSheet(defaultName) {
-      return new Promise((resolve) => {
-        const sheet = document.getElementById('tcNameSheet');
-        const input = document.getElementById('tcExportNameInput');
-        const ok = document.getElementById('tcNameSheetOk');
-        const cancel = document.getElementById('tcNameSheetCancel');
-        if (!sheet || !input || !ok) { resolve(defaultName || ''); return; }
-        input.value = defaultName || '';
-        sheet.hidden = false;
-        sheet.removeAttribute('hidden');
-        sheet.classList.add('show');
-        setTimeout(() => { try { input.focus(); input.select(); } catch (e) {} }, 80);
-        const cleanup = () => {
-          ok.removeEventListener('click', onOk);
-          cancel && cancel.removeEventListener('click', onCancel);
-          tcCloseNameSheet();
-        };
-        const onOk = () => {
-          const v = (input.value || '').trim();
-          cleanup();
-          if (v) { try { lsWrite('lx8_tc_name', v); } catch (e) {} }
-          resolve(v);
-        };
-        const onCancel = () => { cleanup(); resolve(null); };
-        ok.addEventListener('click', onOk);
-        if (cancel) cancel.addEventListener('click', onCancel);
-      });
-    }
-
-    let tcExportSelection = { mode: 'weeks', weeks: new Set(), days: new Set() };
-
-    function tcExportDateLabel(dateKey) {
-      if (!dateKey) return '';
-      const parts = String(dateKey).split('-').map(Number);
-      if (parts.length !== 3 || parts.some(isNaN)) return String(dateKey);
-      const d = new Date(parts[0], parts[1] - 1, parts[2]);
-      return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-    }
-
-    function tcExportWeekDateKey(offset) {
-      const b = tcWeekBounds(offset).start;
-      return tcDateKey(b);
-    }
-
-    function tcExportAvailableWeekOffsets() {
-      const offsets = new Set();
-      // Keep the picker useful even when a technician has not entered hours yet.
-      for (let i = -12; i <= 4; i++) offsets.add(i);
-      (tcState.entries || []).forEach(en => {
-        const key = en.date || tcDateKey(en.clockIn);
-        if (!key) return;
-        const d = new Date(key + 'T12:00:00');
-        if (isNaN(d.getTime())) return;
-        const nowStart = tcWeekBounds(0).start.getTime();
-        const weekStart = (() => {
-          const day = d.getDay();
-          const mo = day === 0 ? -6 : 1 - day;
-          const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() + mo);
-          x.setHours(0,0,0,0); return x;
-        })().getTime();
-        offsets.add(Math.round((weekStart - nowStart) / (7 * 86400000)));
-      });
-      return Array.from(offsets).filter(n => n >= -104 && n <= 104).sort((a,b) => b-a);
-    }
-
-    function tcExportEntriesForSelectedDays(days) {
-      const set = days instanceof Set ? days : new Set(days || []);
-      return (tcState.entries || []).filter(en => {
-        const d = en.date || tcDateKey(en.clockIn);
-        return d && set.has(d);
-      }).sort((a,b) => (a.clockIn || 0) - (b.clockIn || 0));
-    }
-
-    function tcExportEntriesForSelectedWeeks(weeks) {
-      const set = weeks instanceof Set ? weeks : new Set(weeks || []);
-      const all = [];
-      set.forEach(off => all.push(...tcEntriesForWeek(Number(off))));
-      return all.sort((a,b) => (a.clockIn || 0) - (b.clockIn || 0));
+      document.body.classList.add('on-time');
+      document.body.classList.remove('on-home','on-time-edit','on-time-period');
+      tcRenderRecords();
     }
 
     function tcExportGroupByWeek(entries) {
@@ -8687,97 +8219,6 @@ function tcRenderEntryList(listEl, offset) {
       try { for (const ref of ['E32','F32','E33','F33','E34','F34','E35','F35']) ws.getCell(ref).border = box; } catch (e) {}
     }
 
-    function tcPeriodOffsets() {
-      const po = Number(tcState.periodOffset || 0);
-      return [po * 2 - 1, po * 2];
-    }
-    function tcPeriodLabel() {
-      const offs = tcPeriodOffsets();
-      const a = tcWeekBounds(offs[0]).start;
-      const b = tcWeekBounds(offs[1]).end;
-      const end = new Date(b.getTime() - 1);
-      const sameYear = a.getFullYear() === end.getFullYear();
-      const optsA = { month:'short', day:'numeric' };
-      const optsB = { month:'short', day:'numeric', year:'numeric' };
-      return a.toLocaleDateString(undefined, optsA) + ' – ' + end.toLocaleDateString(undefined, optsB);
-    }
-    function tcPeriodEntries() {
-      const offs = tcPeriodOffsets();
-      return tcExportEntriesForSelectedWeeks(new Set(offs));
-    }
-    function tcPeriodTotals() {
-      const entries = tcPeriodEntries();
-      let bakery=0, travel=0, shop=0;
-      entries.forEach(en => {
-        const h = tcEntryHours(en);
-        if (en.type === 'travel') travel += h;
-        else if (en.type === 'shop') shop += h;
-        else bakery += h;
-      });
-      return { bakery, travel, shop, total: bakery+travel+shop, entries };
-    }
-    function tcPeriodJobGroups(entries) {
-      const groups = new Map();
-      (entries || []).forEach(en => {
-        const key = en.jobId || ('name:' + (en.bakeryName || 'No job'));
-        const name = en.bakeryName || 'No job';
-        if (!groups.has(key)) groups.set(key, { name, hours:0, count:0 });
-        const g = groups.get(key); g.hours += tcEntryHours(en); g.count++;
-      });
-      return Array.from(groups.values()).sort((a,b)=>b.hours-a.hours);
-    }
-    function tcRenderPeriodSummary() {
-      const title=document.getElementById('tcPeriodTitle'), total=document.getElementById('tcPeriodTotal'), meta=document.getElementById('tcPeriodMeta'), jobsEl=document.getElementById('tcPeriodJobs');
-      const entries=tcPeriodEntries(), t=tcPeriodTotals(), jobs=tcPeriodJobGroups(entries);
-      if (title) title.textContent=tcPeriodLabel();
-      if (total) total.textContent=t.total.toFixed(2)+' h';
-      if (meta) meta.textContent=entries.length ? (entries.length+' time entr'+(entries.length===1?'y':'ies')+' · '+jobs.length+' '+(jobs.length===1?'job':'jobs')) : 'No time entered for this 2-week period';
-      if (jobsEl) jobsEl.innerHTML=jobs.length ? jobs.slice(0,4).map(g=>'<div class="tc-period-job"><span class="tc-period-job-name">'+jobEsc(g.name)+'</span><span class="tc-period-job-hours">'+g.hours.toFixed(2)+' h</span></div>').join('') : '';
-    }
-    function tcRenderPeriodDetail() {
-      const title=document.getElementById('tcPeriodDetailTitle'), nav=document.getElementById('tcPeriodNavLabel');
-      const t=tcPeriodTotals(), entries=t.entries;
-      if (title) title.textContent=tcPeriodLabel();
-      if (nav) nav.textContent=(Number(tcState.periodOffset||0)===0?'Current period':(Number(tcState.periodOffset||0)<0?'Previous period':'Next period'));
-      const set=(id,v)=>{const el=document.getElementById(id); if(el) el.textContent=v.toFixed(2);};
-      set('tcPeriodBakery',t.bakery); set('tcPeriodTravel',t.travel); set('tcPeriodShop',t.shop); set('tcPeriodAll',t.total);
-      const check=document.getElementById('tcPeriodCheck');
-      const active=!!tcState.active;
-      const noJob=entries.filter(e=>!e.jobId && (e.bakeryName||'')==='').length;
-      if(check){
-        const issues=[];
-        if(active) issues.push('A clock is currently running.');
-        if(!entries.length) issues.push('No time entries have been recorded.');
-        if(noJob) issues.push(noJob+' entr'+(noJob===1?'y has':'ies have')+' no job assigned.');
-        check.innerHTML=issues.length
-          ? '<div class="tc-period-check-card warn"><strong>Review needed</strong><div style="margin-top:4px;">'+issues.map(jobEsc).join('<br>')+'</div></div>'
-          : '<div class="tc-period-check-card good"><strong>Ready to review</strong><div style="margin-top:4px;">All '+entries.length+' entries are included in this period.</div></div>';
-      }
-      const list=document.getElementById('tcPeriodEntryList');
-      if(!list) return;
-      if(!entries.length){ list.innerHTML='<div style="padding:24px;text-align:center;color:var(--muted);">No time entries in this pay period</div>'; return; }
-      const byDay=new Map();
-      entries.forEach(en=>{ const d=en.date||tcDateKey(en.clockIn); if(!byDay.has(d)) byDay.set(d,[]); byDay.get(d).push(en); });
-      const days=Array.from(byDay.keys()).sort();
-      list.innerHTML=days.map(d=>{
-        const es=byDay.get(d); const hrs=es.reduce((a,e)=>a+tcEntryHours(e),0); const jobs=[...new Set(es.map(e=>e.bakeryName||'No job'))];
-        return '<div class="tc-period-day" data-period-date="'+d+'"><div class="tc-period-day-main"><div class="tc-period-day-title">'+jobEsc(tcFormatLongDate(d))+'</div><div class="tc-period-day-sub">'+jobEsc(jobs.join(' · '))+' · '+es.length+' entr'+(es.length===1?'y':'ies')+'</div></div><div class="tc-period-day-hours">'+hrs.toFixed(2)+' h</div></div>';
-      }).join('');
-      list.querySelectorAll('.tc-period-day').forEach(el=>el.addEventListener('click',()=>{
-        const d=el.getAttribute('data-period-date'); const en=entries.find(e=>(e.date||tcDateKey(e.clockIn))===d); if(en) tcOpenEdit(en.id);
-      }));
-    }
-    function tcOpenPeriod() {
-      tcLoad();
-      showScreen('screenTimePeriod');
-      document.body.classList.add('on-time-period');
-      document.body.classList.remove('on-time-week','on-time-edit');
-      tcRenderPeriodDetail();
-    }
-    function tcOpenPeriodExport() {
-      const offs=tcPeriodOffsets();
-      tcOpenExportSheet(offs);
-    }
 
     function tcCloseExportSheet() {
       const sheet = document.getElementById('tcExportSheet'), scrim = document.getElementById('tcExportScrim');
@@ -8984,29 +8425,15 @@ function tcRenderEntryList(listEl, offset) {
       once('btnTcClockOut', tcClockOut);
       
       once('btnTcExport', tcOpenExportSheet);
+      once('btnTcRecordsExport', tcOpenExportSheet);
+      once('btnTcRecords', tcOpenRecords);
       once('btnTcAddManual', tcOpenManual);
-      once('btnTcAddManualWeek', tcOpenManual);
-      once('btnTcWeekExport', tcOpenExportSheet);
-      once('btnTcReviewPeriod', tcOpenPeriod);
-      once('btnTcPeriodExport', tcOpenPeriodExport);
-      once('btnTcPeriodAdd', tcOpenManual);
-      once('btnTcPeriodPrev', () => { tcState.periodOffset = (tcState.periodOffset || 0) - 1; tcRenderPeriodDetail(); });
-      once('btnTcPeriodNext', () => { tcState.periodOffset = (tcState.periodOffset || 0) + 1; tcRenderPeriodDetail(); });
+      once('btnTcAddManualRecords', tcOpenManual);
       bindTcExportPicker();
-      const weekHead = document.getElementById('tcWeekDetailHead');
-      if (weekHead && weekHead.dataset.tcBound !== '1') {
-        weekHead.dataset.tcBound = '1';
-        weekHead.addEventListener('click', tcOpenWeekPick);
-      }
-      const weekPickCancel = document.getElementById('tcWeekPickCancel');
-      if (weekPickCancel && weekPickCancel.dataset.tcBound !== '1') {
-        weekPickCancel.dataset.tcBound = '1';
-        weekPickCancel.addEventListener('click', tcCloseWeekPick);
-      }
-      const weekScrim = document.getElementById('tcWeekPickScrim');
-      if (weekScrim && weekScrim.dataset.tcBound !== '1') {
-        weekScrim.dataset.tcBound = '1';
-        weekScrim.addEventListener('click', tcCloseWeekPick);
+      const recordsSearch = document.getElementById('tcRecordsSearch');
+      if (recordsSearch && recordsSearch.dataset.tcBound !== '1') {
+        recordsSearch.dataset.tcBound = '1';
+        recordsSearch.addEventListener('input', tcRenderRecords);
       }
       const hoursTile = document.getElementById('jdHoursTile');
       if (hoursTile && hoursTile.dataset.tcBound !== '1') {
@@ -9018,9 +8445,9 @@ function tcRenderEntryList(listEl, offset) {
       once('btnTcEditSave', tcSaveEdit);
       once('btnTcEditCancel', () => {
         showScreen('screenTimeWeek');
-        document.body.classList.add('on-time-week');
-        document.body.classList.remove('on-time-edit');
-        tcRenderWeekDetail();
+        document.body.classList.add('on-time');
+        document.body.classList.remove('on-time-edit','on-time-period');
+        tcRenderRecords();
       });
       once('btnTcEditDelete', tcDeleteEdit);
       const typeRow = document.getElementById('tcTypeRow');

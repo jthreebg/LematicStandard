@@ -6152,3 +6152,34 @@ body.on-time-period #btnSettings { display:none !important; }
 body.on-time-period #btnHome { display:none !important; }
 body.on-time-period .header-logo { cursor:pointer; }
 body.on-time-period .app-header { box-shadow:0 8px 24px rgba(0,0,0,.14); }
+
+    /* Simplified time records */
+    .tc-main-actions {
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+    .tc-main-actions .btn { flex:1 1 0; min-width:130px; }
+    .tc-records-search { margin-bottom:12px; }
+    .tc-records-search input {
+      width:100%;
+      box-sizing:border-box;
+      border:1px solid var(--border);
+      background:var(--surface-2, rgba(255,255,255,.04));
+      color:var(--text);
+      border-radius:12px;
+      padding:12px 14px;
+      font-size:1rem;
+      outline:none;
+    }
+    .tc-records-search input:focus { border-color:var(--accent); }
+    .tc-record-date {
+      padding:14px 4px 7px;
+      color:var(--muted);
+      font-size:.72rem;
+      font-weight:700;
+      letter-spacing:.08em;
+      text-transform:uppercase;
+    }
+    .tc-records-list .tc-entry { cursor:pointer; }
+    .tc-records-list .tc-entry-sub { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
