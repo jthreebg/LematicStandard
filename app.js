@@ -51,6 +51,9 @@ const ICO = {
       visits: null,
       jobs: null,
       partsRequests: null,
+      customers: null,
+      sites: null,
+      serials: null,
       ready: false
     };
     let lxDb = null;
@@ -251,7 +254,7 @@ const ICO = {
       const out = [];
       for (const ins of (list || [])) {
         const copy = JSON.parse(JSON.stringify(ins));
-        const insId = copy.id || ('ins_' + Date.now());
+        const insId = copy.id || newEntityId('ins');
         copy.id = insId;
         if (copy.results) {
           for (const k of Object.keys(copy.results)) {
@@ -1097,6 +1100,7 @@ const ICO = {
         });
         const inspections = stripInspectionPhotos(JSON.parse(JSON.stringify(loadInspections() || [])));
         const jobs = JSON.parse(JSON.stringify(loadJobs() || []));
+        const partsRequests = JSON.parse(JSON.stringify(loadPartsRequests() || []));
         const photos = await idbGetAllPhotos();
         const files = [
           { name: 'manifest.json', data: JSON.stringify({
@@ -1106,11 +1110,13 @@ const ICO = {
             visits: visits.length,
             inspections: inspections.length,
             jobs: jobs.length,
+            partsRequests: partsRequests.length,
             photos: photos.length
           }, null, 2) },
           { name: 'visits.json', data: JSON.stringify(visits) },
           { name: 'inspections.json', data: JSON.stringify(inspections) },
-          { name: 'jobs.json', data: JSON.stringify(jobs) }
+          { name: 'jobs.json', data: JSON.stringify(jobs) },
+          { name: 'parts_requests.json', data: JSON.stringify(partsRequests) }
         ];
         if (typeof window.getPunchlistBackup === 'function') {
           files.push({ name: 'punchlist.json', data: JSON.stringify(window.getPunchlistBackup()) });
@@ -1178,6 +1184,7 @@ const ICO = {
         const visits = byName['visits.json'] ? JSON.parse(u8ToText(byName['visits.json'])) : [];
         const inspections = byName['inspections.json'] ? JSON.parse(u8ToText(byName['inspections.json'])) : [];
         const jobs = byName['jobs.json'] ? JSON.parse(u8ToText(byName['jobs.json'])) : [];
+        const partsRequests = byName['parts_requests.json'] ? JSON.parse(u8ToText(byName['parts_requests.json'])) : [];
         const photoFiles = files.filter(f => f.name.indexOf('photos/') === 0);
         for (const pf of photoFiles) {
           const base = pf.name.split('/').pop();
@@ -1190,6 +1197,14 @@ const ICO = {
         storeMem.inspections = Array.isArray(inspections) ? inspections : [];
         storeMem.jobs = Array.isArray(jobs) ? jobs : [];
         try { saveJobs(storeMem.jobs); } catch (e) {}
+        // Parts Requests were missing from backup/restore entirely until
+        // now — same shape of fix as Jobs just above: restore into
+        // storeMem and persist via the module's own save function so it
+        // goes through the same localStorage+IndexedDB path a normal save
+        // would. Older backups simply won't have this file, which
+        // correctly restores as zero parts requests, not an error.
+        storeMem.partsRequests = Array.isArray(partsRequests) ? partsRequests : [];
+        try { savePartsRequests(storeMem.partsRequests); } catch (e) {}
         for (const v of storeMem.visits) {
           if (v.photos && v.photos.length) v.photos = await Promise.all(v.photos.map(hydratePhotoUrl));
         }
@@ -1327,6 +1342,136 @@ const ICO = {
       }
       try { idbSetKv('jobs', storeMem.jobs); } catch (e) {}
       return ok;
+    }
+
+    // ===== CUSTOMER / SITE / SERIAL (physical equipment) =====
+    // Same load/save shape as loadJobs/saveJobs above — localStorage mirror
+    // + IndexedDB via the shared kv store. This is the stable identity
+    // layer underneath Job's existing customer/site/machine/serials text
+    // fields; those text fields are never read from or written to by any
+    // function below. See the Phase 1 Item 4 report for the reasoning
+    // behind three layers (Customer → Site → Serial) rather than four —
+    // approved as final: no Machine or MachineType entity.
+
+    function normalizeMatchText(v) {
+      return String(v || '').trim().toLowerCase();
+    }
+
+    function loadCustomers() {
+      const fromLs = lsRead('lx8_customers', []);
+      const mem = Array.isArray(storeMem.customers) ? storeMem.customers : [];
+      const src = mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+      storeMem.customers = Array.isArray(src) ? src : [];
+      return storeMem.customers;
+    }
+    function saveCustomers(list) {
+      storeMem.customers = Array.isArray(list) ? list : [];
+      const ok = lsWrite('lx8_customers', storeMem.customers);
+      try { idbSetKv('customers', storeMem.customers); } catch (e) {}
+      return ok;
+    }
+    function loadSites() {
+      const fromLs = lsRead('lx8_sites', []);
+      const mem = Array.isArray(storeMem.sites) ? storeMem.sites : [];
+      const src = mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+      storeMem.sites = Array.isArray(src) ? src : [];
+      return storeMem.sites;
+    }
+    function saveSites(list) {
+      storeMem.sites = Array.isArray(list) ? list : [];
+      const ok = lsWrite('lx8_sites', storeMem.sites);
+      try { idbSetKv('sites', storeMem.sites); } catch (e) {}
+      return ok;
+    }
+    function loadSerials() {
+      const fromLs = lsRead('lx8_serials', []);
+      const mem = Array.isArray(storeMem.serials) ? storeMem.serials : [];
+      const src = mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+      storeMem.serials = Array.isArray(src) ? src : [];
+      return storeMem.serials;
+    }
+    function saveSerials(list) {
+      storeMem.serials = Array.isArray(list) ? list : [];
+      const ok = lsWrite('lx8_serials', storeMem.serials);
+      try { idbSetKv('serials', storeMem.serials); } catch (e) {}
+      return ok;
+    }
+
+    // Find-or-create a Customer by exact normalized name (trim + lowercase
+    // only — no fuzzy matching, per the approved matching rules). Returns
+    // the Customer record; mutates and persists the passed-in list only
+    // when a new one is created.
+    function findOrCreateCustomer(name) {
+      const norm = normalizeMatchText(name);
+      if (!norm) return null;
+      const all = loadCustomers();
+      let found = all.find(c => c && c.nameNormalized === norm);
+      if (found) return found;
+      const now = new Date().toISOString();
+      found = { id: newEntityId('cust'), name: String(name).trim(), nameNormalized: norm, createdAt: now, updatedAt: now };
+      all.push(found);
+      saveCustomers(all);
+      return found;
+    }
+    // Site identity is scoped to its Customer — the same site name under
+    // two different customers must remain two separate Sites.
+    function findOrCreateSite(customerId, name) {
+      const norm = normalizeMatchText(name);
+      if (!customerId || !norm) return null;
+      const all = loadSites();
+      let found = all.find(s => s && s.customerId === customerId && s.nameNormalized === norm);
+      if (found) return found;
+      const now = new Date().toISOString();
+      found = { id: newEntityId('site'), customerId, name: String(name).trim(), nameNormalized: norm, address: '', createdAt: now, updatedAt: now };
+      all.push(found);
+      saveSites(all);
+      return found;
+    }
+    // Serial identity is scoped to its Site for this phase — the same
+    // serial number appearing at two different sites is preserved as two
+    // separate equipment records rather than guessed-merged.
+    function findOrCreateSerial(siteId, serialNumber, machineType) {
+      const norm = normalizeMatchText(serialNumber);
+      if (!siteId || !norm) return null;
+      const all = loadSerials();
+      let found = all.find(s => s && s.siteId === siteId && s.serialNumberNormalized === norm);
+      if (found) return found;
+      const now = new Date().toISOString();
+      found = { id: newEntityId('ser'), siteId, machineType: machineType || '', serialNumber: String(serialNumber).trim(), serialNumberNormalized: norm, createdAt: now, updatedAt: now };
+      all.push(found);
+      saveSerials(all);
+      return found;
+    }
+
+    // Resolves (creating only what's missing) the stable Customer/Site/
+    // Serial ids for ONE job, and writes only customerId/siteId/serialIds
+    // onto that job — job.customer/site/machine/serials/contact are never
+    // read for anything but lookup, and never written to. Deliberately
+    // lazy (runs the first time a job without customerId is loaded) rather
+    // than a bulk one-time migration pass: a bulk pass over every job at
+    // boot is exactly the kind of "opening the app unexpectedly rewrites a
+    // lot of unrelated data at once" the brief was concerned about, and
+    // offers no real safety advantage here, since this resolver only ever
+    // touches the one job it's given — never other jobs, never unrelated
+    // storage. Idempotent by construction: re-running it on an
+    // already-resolved job is a no-op (short-circuits on customerId), and
+    // re-running find-or-create against the same normalized text always
+    // returns the same existing record rather than creating a duplicate.
+    function resolveJobEquipmentIds(job) {
+      if (!job || job.customerId) return job;
+      const customer = findOrCreateCustomer(job.customer);
+      if (!customer) return job;
+      job.customerId = customer.id;
+      const site = findOrCreateSite(customer.id, job.site);
+      if (site) job.siteId = site.id;
+      const serials = Array.isArray(job.serials) ? job.serials : [];
+      if (site && serials.length) {
+        job.serialIds = serials
+          .map(s => findOrCreateSerial(site.id, s, job.machine))
+          .filter(Boolean)
+          .map(rec => rec.id);
+      }
+      return job;
     }
 
     // ===== PARTS REQUESTS =====
@@ -2131,6 +2276,14 @@ const ICO = {
     function openJobDetail(id) {
       const job = loadJobs().find(j => j.id === id);
       if (!job) { toast('Job not found'); return; }
+      // Resolve this one job's Customer/Site/Serial ids the first time
+      // it's actually opened — not for every job whenever the list is
+      // loaded. Deliberately scoped to exactly the job the technician is
+      // opening, so viewing Job Detail never touches any other job's data.
+      if (!job.customerId) {
+        resolveJobEquipmentIds(job);
+        try { saveJobs(loadJobs()); } catch (e) {}
+      }
       detailJobId = id;
       showScreen('screenJobDetail');
       setHeader('Job');
@@ -2441,7 +2594,7 @@ const ICO = {
         pendingInspectJobId = null;
         if (typeof setActiveMachine === 'function') setActiveMachine(model);
         currentInspection = {
-          id: 'ins_' + Date.now(),
+          id: newEntityId('ins'),
           customer: '',
           model,
           serial: serial || 'TBD',
@@ -2475,7 +2628,7 @@ const ICO = {
       currentSectionIndex = 0;
       if (typeof setActiveMachine === 'function') setActiveMachine(model);
       currentInspection = {
-        id: 'ins_' + Date.now(),
+        id: newEntityId('ins'),
         customer: job.customer || '',
         model,
         serial,
@@ -3683,7 +3836,7 @@ const ICO = {
           const model = 'LX-8';
           setActiveMachine(model);
           currentInspection = {
-            id: 'ins_' + Date.now(),
+            id: newEntityId('ins'),
             customer: job.customer || '',
             model,
             serial: (job.site || '').trim() || 'TBD',
@@ -3974,7 +4127,7 @@ const ICO = {
 
       // Create new inspection
       currentInspection = {
-        id: 'ins_' + Date.now(),
+        id: newEntityId('ins'),
         customer,
         model,
         serial,
@@ -6572,26 +6725,47 @@ const IDB_NAME = "FieldPunchlistDB";
       });
     }
 
-    function idbSet(key, value) {
-      return new Promise((resolve, reject) => {
-        if (!db) return reject(new Error("DB not open"));
-        const tx = db.transaction(STORE_NAME, "readwrite");
-        const req = tx.objectStore(STORE_NAME).put(value, key);
-        req.onsuccess = () => resolve();
-        req.onerror = () => reject(req.error);
-      });
+    // ===== IndexedDB consolidation =====
+    // FieldPunchlistDB used to be Punchlist's own, separate IndexedDB
+    // database — completely independent of the main app's `lematic-lx8`
+    // database that Jobs/Inspections/Parts Requests all share. That's real
+    // architectural fragmentation a future sync layer would have to know
+    // about twice. This moves the single "main" blob into the existing
+    // shared `kv` store (via the same idbGetKv/idbSetKv every other module
+    // already uses) under its own key, leaving the blob's internal shape
+    // (including its embedded-base64 photos) completely untouched — only
+    // *where* it lives changes. FieldPunchlistDB itself is never deleted
+    // here, only stopped-from-being-written-to once migrated, exactly per
+    // the "don't remove until migration is proven safe" requirement.
+    const PL_CONSOLIDATED_KEY = 'punchlist_main';
+    async function plMigrateFromOldDatabase() {
+      // Already-migrated devices short-circuit here on every future load —
+      // this is what makes running the migration repeatedly a no-op.
+      const already = await idbGetKv(PL_CONSOLIDATED_KEY).catch(() => null);
+      if (already && already.jobs && already.currentJob) return already;
+      // Nothing in the new location yet — check the old, separate database.
+      try {
+        await openDB();
+        const old = await idbGet('main');
+        if (old && old.jobs && old.currentJob) {
+          await idbSetKv(PL_CONSOLIDATED_KEY, old);
+          return old;
+        }
+      } catch (e) {
+        // No old database either (a fresh install) — nothing to migrate.
+      }
+      return null;
     }
 
     async function plLoadData() {
       try {
-        await openDB();
-        let saved = await idbGet("main");
+        let saved = await plMigrateFromOldDatabase();
         if (!saved) {
           try {
             const legacy = localStorage.getItem(LEGACY_KEY);
             if (legacy) {
               saved = JSON.parse(legacy);
-              await idbSet("main", saved);
+              await idbSetKv(PL_CONSOLIDATED_KEY, saved);
               toast("Data upgraded to larger storage");
             }
           } catch (e) {}
@@ -6601,14 +6775,12 @@ const IDB_NAME = "FieldPunchlistDB";
         try { migratePunchlistJobKeys(); } catch (e) {}
       } catch (e) {
         data = JSON.parse(JSON.stringify(defaultData));
-        try { await openDB(); } catch (_) {}
       }
     }
 
     async function plSaveData() {
       try {
-        if (!db) await openDB();
-        await idbSet("main", data);
+        await idbSetKv(PL_CONSOLIDATED_KEY, data);
         return true;
       } catch (e) {
         try {
@@ -8384,7 +8556,10 @@ const IDB_NAME = "FieldPunchlistDB";
     window.tcFormatLongDate = tcFormatLongDate;
     window.tcOpenEdit = tcOpenEdit;
     function tcUid() {
-      return 'tc_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+      // Was its own separate implementation of the same idea as
+      // newEntityId() — now just delegates to it, removing the duplicate
+      // while keeping every call site (3 of them) unchanged.
+      return newEntityId('tc');
     }
     function tcLoad() {
       try {
