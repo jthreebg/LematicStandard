@@ -1,3 +1,4 @@
+
 const ICO = {
       clip: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="8" y="3.2" width="8" height="3.6" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="5.2" y="5.2" width="13.6" height="15.6" rx="2.4" stroke="currentColor" stroke-width="1.2"/><path d="M9 12h6M9 16h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
       search: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="6.2" stroke="currentColor" stroke-width="1.8"/><path d="M20 20l-3.6-3.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
@@ -13,8 +14,7 @@ const ICO = {
     let editingInspectionId = null; // when set, start form is in edit-meta mode
     let currentSectionIndex = 0;
     let currentItemIndex = 0;
-    let inspectListMode = false;
-    let inspectSlideDir = null;
+    const inspectListMode = true; // list view is the only inspection view now
     let extraSectionTab = null;
     let notesSource = 'inspection';
     let results = {}; // item_id -> {condition, notes, impacts, severity, photoDataUrl}
@@ -33,13 +33,11 @@ const ICO = {
       } else if (window.EMBEDDED_DATA && window.EMBEDDED_DATA.sections && window.EMBEDDED_DATA.sections.length) {
         APP_DATA = window.EMBEDDED_DATA;
       } else {
-        try {
-          const res = await fetch('inspection_data.json');
-          APP_DATA = await res.json();
-        } catch (e) {
-          console.warn('Could not load data');
-          APP_DATA = { sections: [], items: [], lists: {} };
-        }
+        // templates.js (loaded before this script) always provides
+        // window.MACHINE_TEMPLATES in the shipped app, so this is a
+        // last-resort empty state rather than a real data source.
+        console.warn('No machine template data found');
+        APP_DATA = { sections: [], items: [], lists: {} };
       }
       if (init) initApp();
       return APP_DATA;
@@ -52,6 +50,7 @@ const ICO = {
       inspections: null,
       visits: null,
       jobs: null,
+      partsRequests: null,
       ready: false
     };
     let lxDb = null;
@@ -413,14 +412,16 @@ const ICO = {
 
     function saveInspections(list) {
       storeMem.inspections = Array.isArray(list) ? list : [];
+      // The debounced IndexedDB persist is the durable copy; kick it off
+      // regardless of whether the quick localStorage mirror below succeeds.
       schedulePersist();
       const ok = lsWrite('lx8_inspections', stripInspectionPhotos(storeMem.inspections));
       if (!ok) {
-        try {
-          const slim = stripInspectionPhotos(storeMem.inspections);
-          if (lsWrite('lx8_inspections', slim)) return true;
-        } catch (e2) {}
-        toast('Saved to device storage (IndexedDB)');
+        // localStorage is likely full or unavailable. The IndexedDB write
+        // above is still in flight — don't tell the user it's "saved"
+        // before that's actually confirmed.
+        console.warn('localStorage write failed for lx8_inspections; relying on IndexedDB backup');
+        toast('Storage nearly full — saving to backup storage, free up space soon');
       }
       return true;
     }
@@ -461,6 +462,8 @@ const ICO = {
       if (!navGoingBack && currentId && currentId !== id) {
         navHistory.push(currentId);
       }
+      // Drive screen enter direction (forward vs back) for spatial continuity
+      document.body.classList.toggle('nav-back', !!navGoingBack);
       document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
       const screenEl = document.getElementById(id);
       if (screenEl) screenEl.classList.add('active');
@@ -478,6 +481,7 @@ const ICO = {
       const bottom = document.getElementById('bottomBar');
       const barInspect = document.getElementById('barInspect');
       const bars = {
+        screenInspect: 'barInspect',
         screenFindings: 'barFindings',
         screenNotes: 'barFindings',
         screenInspectPreview: 'barFindings'
@@ -496,8 +500,7 @@ const ICO = {
       }
       // Header red glow only on home
       document.body.classList.toggle('on-home', id === 'screenHome');
-      document.body.classList.toggle('on-time', id === 'screenTime' || id === 'screenTimeEdit' || id === 'screenTimeWeek');
-      document.body.classList.toggle('on-time-period', false);
+      document.body.classList.toggle('on-time', id === 'screenTime' || id === 'screenTimeEdit');
       document.body.classList.toggle('on-settings', id === 'screenSettings');
       document.body.classList.toggle('on-punchlist', id === 'screenPunchlist');
       document.body.classList.toggle('on-pl-edit', id === 'screenPunchlistEdit');
@@ -508,7 +511,8 @@ const ICO = {
       // to the actual previous screen via navHistory.
       const genericBackScreens = new Set([
         'screenJobsList', 'screenJobDetail', 'screenJobForm',
-        'screenInspectList', 'screenPunchlistList', 'screenPunchlistEdit', 'screenTimeWeek'
+        'screenInspectList', 'screenPunchlistList', 'screenPunchlistEdit',
+        'screenPartsList', 'screenPartsForm'
       ]);
       document.body.classList.toggle('has-screen-back', genericBackScreens.has(id));
       const fab = document.getElementById('fab-add');
@@ -530,7 +534,6 @@ const ICO = {
         document.body.classList.remove('notes-focus');
         document.body.classList.remove('notes-typing');
       }
-      const tripFlow = isTripFlowScreen(id);
       const inspectFlow = id === 'screenInspect' || id === 'screenFindings' || id === 'screenNotes';
       document.body.classList.toggle('on-inspect-flow', inspectFlow);
       const inInspections = (
@@ -758,7 +761,7 @@ const ICO = {
             const open = total - done;
             const allDone = total > 0 && open === 0;
             const statusClass = allDone ? 'badge-complete' : (done > 0 ? 'badge-draft' : 'badge-draft');
-            const statusLabel = allDone ? 'Complete' : (total === 0 ? 'Empty' : 'Open');
+            const statusLabel = allDone ? 'Complete' : (total === 0 ? 'Empty' : 'Pending');
             const rowTone = allDone ? 'list-complete' : '';
             const jobLine = row.jobLabel
               ? row.jobLabel
@@ -828,8 +831,6 @@ const ICO = {
       return Number.isNaN(n) ? null : n;
     }
     function jobStatusFromDates(job) {
-      // A technician can explicitly complete a job before the date range ends.
-      if (job && String(job.status || '').toLowerCase() === 'complete') return 'Complete';
       const start = jobDayStamp(job && job.date);
       const end = jobDayStamp(job && job.endDate);
       const today = new Date();
@@ -939,11 +940,11 @@ const ICO = {
           </div>
           <div class="hj-name">${jobEsc(job.customer || 'Untitled job')}</div>
           ${siteLine ? `<div class="hj-meta">${jobEsc(siteLine)}</div>` : ''}
-          <div class="hj-stats" id="homeCurrentJobStats"><span><b class="n-open">0</b> Open</span><span><b class="n-done">0</b> Complete</span><span><b class="n-ins">${inspectCount}</b> Inspection${inspectCount===1?'':'s'}</span></div>`;
+          <div class="hj-stats" id="homeCurrentJobStats"><span><b class="n-open">0</b> Pending</span><span><b class="n-done">0</b> Complete</span><span><b class="n-ins">${inspectCount}</b> Inspection${inspectCount===1?'':'s'}</span></div>`;
         const statsEl = item.querySelector('#homeCurrentJobStats');
         const fillStats = (openN, doneN) => {
           if (!statsEl) return;
-          statsEl.innerHTML = `<span><b class="n-open">${openN}</b> Open</span><span><b class="n-done">${doneN}</b> Complete</span><span><b class="n-ins">${inspectCount}</b> Inspection${inspectCount===1?'':'s'}</span>`;
+          statsEl.innerHTML = `<span><b class="n-open">${openN}</b> Pending</span><span><b class="n-done">${doneN}</b> Complete</span><span><b class="n-ins">${inspectCount}</b> Inspection${inspectCount===1?'':'s'}</span>`;
         };
         const key = jobDisplayName(job);
         if (typeof window.searchPunchlistItems === 'function') {
@@ -1011,6 +1012,14 @@ const ICO = {
           editInspectionMeta(id);
         });
       });
+      if (typeof bindSwipeToDelete === 'function') {
+        bindSwipeToDelete(container, '.list-item', (row) => ({
+          id: row.dataset.id,
+          kind: 'inspection',
+          title: 'Delete inspection?',
+          label: 'This inspection report will be permanently deleted.'
+        }));
+      }
       refreshHomeCurrentJob();
         refreshStorageCard();
     }
@@ -1202,13 +1211,13 @@ const ICO = {
       }
     }
 
+    // The standalone "Visit" flow (saveVisits/openVisit/persistVisit/
+    // performDeleteVisit/isTripFlowScreen) predates the Jobs + Inspections
+    // model this app now uses, and was fully stubbed out with no callers
+    // left — removed. loadVisits() is kept below because the backup/restore
+    // format and storage layer still read/write an (always-empty) "visits"
+    // key for compatibility with older exported backups.
     function loadVisits() { return []; }
-    function saveVisits(list) {}
-    function isTripFlowScreen(id) { return false; }
-    function persistVisit(opts) { return {}; }
-    function openVisit(id) {}
-    function openDeleteVisitModal(id) {}
-    function performDeleteVisit(id) {}
 
     // ========== JOBS ==========
     let editingJobId = null;
@@ -1266,8 +1275,14 @@ const ICO = {
       const arr = Array.isArray(list) ? list.slice() : [];
       const idx = arr.findIndex(i => i && i.id === SAMPLE_INSPECTION_ID);
       if (idx < 0) {
-        const full = (typeof window !== 'undefined' && window.__SAMPLE_INSPECTION_FULL) || getSampleInspectionRecord();
-        arr.unshift(full);
+        // Seed the demo inspection exactly once, ever. If it's missing and
+        // we've already seeded it before, that means someone deleted it on
+        // purpose — respect that instead of resurrecting it on next load.
+        if (!lsRead('lx8_sample_inspection_seeded', false)) {
+          const full = (typeof window !== 'undefined' && window.__SAMPLE_INSPECTION_FULL) || getSampleInspectionRecord();
+          arr.unshift(full);
+          lsWrite('lx8_sample_inspection_seeded', true);
+        }
       } else {
         arr[idx].jobId = SAMPLE_JOB_ID;
         if (!arr[idx].customer) arr[idx].customer = 'BBU Sample Bakery';
@@ -1278,8 +1293,13 @@ const ICO = {
       const arr = Array.isArray(list) ? list.slice() : [];
       const sample = getSampleJob();
       const idx = arr.findIndex(j => j && j.id === SAMPLE_JOB_ID);
-      if (idx < 0) arr.unshift(sample);
-      else {
+      if (idx < 0) {
+        // Same one-time-seed rule as ensureSampleInspection above.
+        if (!lsRead('lx8_sample_job_seeded', false)) {
+          arr.unshift(sample);
+          lsWrite('lx8_sample_job_seeded', true);
+        }
+      } else {
         arr[idx] = Object.assign({}, arr[idx], {
           site: sample.site,
           contact: sample.contact
@@ -1307,6 +1327,156 @@ const ICO = {
       }
       try { idbSetKv('jobs', storeMem.jobs); } catch (e) {}
       return ok;
+    }
+
+    // ===== PARTS REQUESTS =====
+    // Same load/save shape as loadJobs/saveJobs above. Photo blobs live in
+    // IndexedDB (idbPutPhoto) referenced by photoId, exactly like inspection
+    // photos; each part also keeps a small inline photoThumb data URL for
+    // instant rendering and — critically — for a synchronous Web Share (see
+    // sharePartsRequest below).
+    function loadPartsRequests() {
+      const fromLs = lsRead('lx8_parts_requests', []);
+      const mem = Array.isArray(storeMem.partsRequests) ? storeMem.partsRequests : [];
+      const src = mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+      storeMem.partsRequests = Array.isArray(src) ? src : [];
+      return storeMem.partsRequests;
+    }
+    function savePartsRequests(list) {
+      storeMem.partsRequests = Array.isArray(list) ? list : [];
+      const ok = lsWrite('lx8_parts_requests', storeMem.partsRequests);
+      try { idbSetKv('parts_requests', storeMem.partsRequests); } catch (e) {}
+      return ok;
+    }
+    // A short, human-readable "#104"-style number, distinct from the
+    // opaque internal id (pr_xxxxx) — assigned lazily the first time a
+    // request is actually saved (see savePartsFormDraft) rather than the
+    // moment the screen opens, so an abandoned draft doesn't burn a number.
+    function nextPartsRequestSeq() {
+      const n = (lsRead('lx8_parts_request_seq', 0) || 0) + 1;
+      lsWrite('lx8_parts_request_seq', n);
+      return n;
+    }
+    function findActiveJobForContext() {
+      const jobs = getCurrentJobs();
+      return jobs.find(j => j && j.status === 'In Progress') || jobs[0] || null;
+    }
+    function newPartsRequestDraft(jobId) {
+      const jobs = loadJobs();
+      const job = (jobId && jobs.find(j => j.id === jobId)) || findActiveJobForContext();
+      const now = new Date().toISOString();
+      return {
+        id: newEntityId('pr'),
+        seq: null,
+        jobId: job ? job.id : '',
+        customer: job ? (job.customer || '') : '',
+        site: job ? (job.site || '') : '',
+        machine: job ? (job.machine || '') : '',
+        serial: (job && Array.isArray(job.serials) && job.serials.length) ? job.serials[0] : '',
+        salesOrder: job ? (job.so || '') : '',
+        technician: (job && job.technician) ? job.technician : profileName(),
+        urgent: false,
+        status: 'unsent',
+        createdAt: now,
+        updatedAt: now,
+        parts: []
+      };
+    }
+    function newPartsRequestLine() {
+      return { id: newEntityId('prp'), description: '', qty: 1, partNumber: '', notes: '', photoId: null, photoThumb: '', urgent: false };
+    }
+    function partsRequestHasUrgent(req) {
+      return !!(req.urgent || (req.parts || []).some(p => p && p.urgent));
+    }
+    function partsRequestSummary(req) {
+      const parts = req.parts || [];
+      return {
+        sub: [req.customer, [req.machine, req.serial ? ('Serial ' + req.serial) : ''].filter(Boolean).join(' — ')].filter(Boolean).join(' · '),
+        partsCount: parts.length
+      };
+    }
+    function formatPartsRequestText(req) {
+      const lines = [];
+      lines.push('PARTS REQUEST');
+      lines.push('From: ' + (req.technician || ''));
+      lines.push('Site: ' + (req.site || ''));
+      lines.push('Machine: ' + (req.machine || ''));
+      lines.push('Sales Order: ' + (req.salesOrder || ''));
+      lines.push('Serial Number: ' + (req.serial || ''));
+      if (partsRequestHasUrgent(req)) lines.push('URGENT!!!');
+      lines.push('');
+      lines.push('');
+      const parts = (req.parts || []).filter(p => p.description || p.qty);
+      parts.forEach((p, i) => {
+        const sku = p.partNumber ? '  [' + p.partNumber + ']' : '';
+        lines.push((i + 1) + '. ' + (p.qty || 1) + '× ' + (p.description || 'Unspecified part') + sku);
+        if (p.notes) lines.push('   Notes: ' + p.notes);
+        if (i < parts.length - 1) lines.push('');
+      });
+      lines.push('');
+      lines.push('');
+      lines.push('Sent from field parts request');
+      return lines.join('\n');
+    }
+    // Synchronous data-URL -> Blob (no IndexedDB round-trip). navigator.share()
+    // must fire with no meaningful delay after the tap that triggered it, or
+    // the browser silently drops the share sheet — this keeps everything
+    // before the actual share call synchronous.
+    function dataUrlToBlob(dataUrl) {
+      const [meta, b64] = String(dataUrl || '').split(',');
+      if (!b64) return null;
+      const mime = (meta.match(/data:([^;]+);base64/) || [, 'image/jpeg'])[1];
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Blob([bytes], { type: mime });
+    }
+    function collectPartsRequestPhotoFiles(req) {
+      const files = [];
+      (req.parts || []).forEach(p => {
+        if (!p.photoThumb) return;
+        const blob = dataUrlToBlob(p.photoThumb);
+        if (!blob) return;
+        files.push(new File([blob], (p.description || 'part').replace(/[^a-z0-9]+/gi, '-').slice(0, 40) + '.jpg', { type: blob.type || 'image/jpeg' }));
+      });
+      return files;
+    }
+    async function sharePartsRequest(req) {
+      const text = formatPartsRequestText(req);
+      const files = collectPartsRequestPhotoFiles(req);
+      const shareData = { title: 'Parts Request' + (req.urgent ? ' — URGENT' : ''), text };
+      try {
+        if (navigator.share) {
+          if (files.length && (!navigator.canShare || navigator.canShare({ files }))) shareData.files = files;
+          await navigator.share(shareData);
+          return true;
+        }
+      } catch (e) {
+        if (e && e.name === 'AbortError') return false;
+      }
+      openPartsShareFallback(text);
+      return false;
+    }
+    function openPartsShareFallback(text) {
+      const ta = document.getElementById('partsShareText');
+      if (ta) ta.value = text;
+      const sheet = document.getElementById('partsShareSheet');
+      if (sheet) {
+        sheet.hidden = false;
+        sheet.removeAttribute('hidden');
+        // Match the same open sequence every other .save-sheet uses (e.g.
+        // closePunchlistLinkSheet's counterpart): hidden must come off
+        // before .show is added, or the slide-up transition never plays.
+        requestAnimationFrame(() => sheet.classList.add('show'));
+      }
+    }
+    function closePartsShareSheet() {
+      const sheet = document.getElementById('partsShareSheet');
+      if (sheet) {
+        sheet.classList.remove('show');
+        sheet.hidden = true;
+        sheet.setAttribute('hidden', '');
+      }
     }
 
     function jobEsc(s) {
@@ -1379,6 +1549,318 @@ const ICO = {
       container.innerHTML = html;
       container.querySelectorAll('[data-job-id]').forEach(el => {
         el.addEventListener('click', () => openJobDetail(el.getAttribute('data-job-id')));
+      });
+    }
+
+    // ===== PARTS REQUESTS UI =====
+    let partsFormDraft = null;
+    let partsListStatus = 'unsent';
+    let partsLineEditingId = null; // id of the line currently open in the modal, or null = adding new
+
+    function partsRequestStatusLabel(status) {
+      if (status === 'pending') return 'Pending';
+      if (status === 'complete') return 'Complete';
+      return 'Unsent';
+    }
+    function partsRequestStatusBadgeClass(status) {
+      if (status === 'pending') return 'badge-inprogress';
+      if (status === 'complete') return 'badge-complete';
+      return 'badge-draft';
+    }
+    function formatPartsRequestDate(iso) {
+      try { return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
+      catch (e) { return ''; }
+    }
+
+    function refreshPartsList() {
+      const container = document.getElementById('partsRequestsList');
+      if (!container) return;
+      const all = loadPartsRequests().slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+      const list = all.filter(r => (r.status || 'unsent') === partsListStatus);
+      if (!list.length) {
+        container.innerHTML = `<div class="empty-state">
+          <div class="icon"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" aria-hidden="true"><path d="M14.2 4.8 19.2 9.8 9.8 19.2 4.8 14.2Z" stroke="currentColor" stroke-width="0.9" stroke-linejoin="round"/><path d="M13 6 18 11" stroke="currentColor" stroke-width="0.9"/><circle cx="8.2" cy="15.8" r="1.15" stroke="currentColor" stroke-width="0.9"/></svg></div>
+          <p>No ${jobEsc(partsRequestStatusLabel(partsListStatus).toLowerCase())} parts requests.</p>
+        </div>`;
+        return;
+      }
+      container.innerHTML = list.map(req => {
+        const sum = partsRequestSummary(req);
+        return `<div class="pl-item" data-id="${req.id}">
+          <div class="list-item-main">
+            <div class="title">Parts Request${req.seq ? ' #' + req.seq : ''}${partsRequestHasUrgent(req) ? ' <span class="badge badge-urgent">Urgent</span>' : ''}</div>
+            <div class="sub">${jobEsc(sum.sub || 'No job linked')}</div>
+            <div class="action-line">${sum.partsCount} part${sum.partsCount !== 1 ? 's' : ''} · ${jobEsc(formatPartsRequestDate(req.updatedAt))}</div>
+          </div>
+          <div class="list-item-actions">
+            <span class="badge ${partsRequestStatusBadgeClass(req.status)}">${partsRequestStatusLabel(req.status)}</span>
+          </div>
+        </div>`;
+      }).join('');
+      container.querySelectorAll('[data-id]').forEach(el => {
+        el.addEventListener('click', (ev) => {
+          if (typeof window.swipeIgnoreClicksUntil === 'number' && Date.now() < window.swipeIgnoreClicksUntil) return;
+          if (ev.currentTarget.closest && ev.currentTarget.closest('.swipe-host.swipe-open')) return;
+          openPartsForm(el.getAttribute('data-id'));
+        });
+      });
+      if (typeof bindSwipeToDelete === 'function') {
+        bindSwipeToDelete(container, '.pl-item', (row) => ({
+          id: row.getAttribute('data-id'),
+          kind: 'parts-request',
+          title: 'Delete parts request?',
+          label: 'This parts request will be permanently deleted.'
+        }));
+      }
+    }
+
+    function setPartsListTab(status) {
+      partsListStatus = status;
+      document.querySelectorAll('#partsSeg .seg-btn').forEach(btn => {
+        const on = btn.getAttribute('data-status') === status;
+        btn.classList.toggle('on', on);
+        btn.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      const seg = document.getElementById('partsSeg');
+      if (seg) seg.setAttribute('data-mode', status);
+      refreshPartsList();
+    }
+    // One-time bounce-landing entrance for the thumb, matching exactly how
+    // tcOpenExportSheet() lands #tcExportSeg's thumb when that sheet opens.
+    function landPartsSeg() {
+      const seg = document.getElementById('partsSeg');
+      if (!seg) return;
+      seg.classList.remove('seg-land');
+      void seg.offsetWidth;
+      requestAnimationFrame(() => seg.classList.add('seg-land'));
+    }
+
+    function openPartsForm(requestIdOrNull, jobId) {
+      if (requestIdOrNull) {
+        const existing = loadPartsRequests().find(r => r.id === requestIdOrNull);
+        partsFormDraft = existing ? JSON.parse(JSON.stringify(existing)) : newPartsRequestDraft(jobId);
+      } else {
+        partsFormDraft = newPartsRequestDraft(jobId);
+      }
+      renderPartsForm();
+      showScreen('screenPartsForm');
+      setHeader('Parts Request');
+    }
+
+    function renderPartsFormHeader() {
+      const req = partsFormDraft;
+      const el = document.getElementById('pfHeaderTitle');
+      if (!el) return;
+      el.textContent = (req && req.seq) ? ('Parts Request #' + req.seq) : 'New Parts Request';
+    }
+    function renderPartsForm() {
+      const req = partsFormDraft;
+      if (!req) return;
+      renderPartsFormHeader();
+      const dash = (v) => (v && String(v).trim()) ? String(v).trim() : '—';
+      document.getElementById('pfJob').textContent = dash(req.customer);
+      document.getElementById('pfSite').textContent = dash(req.site);
+      document.getElementById('pfMachine').textContent = dash(req.machine);
+      document.getElementById('pfSerial').textContent = dash(req.serial);
+      document.getElementById('pfSalesOrder').textContent = dash(req.salesOrder);
+      document.getElementById('pfTech').textContent = dash(req.technician);
+      const urgentBtn = document.getElementById('btnPartsUrgent');
+      if (urgentBtn) urgentBtn.classList.toggle('on', !!req.urgent);
+      const readOnly = req.status !== 'unsent';
+      document.querySelectorAll('#screenPartsForm [data-parts-editable]').forEach(el => el.classList.toggle('hidden', readOnly));
+      const sendBtn = document.getElementById('btnPartsSend');
+      if (sendBtn) sendBtn.textContent = req.status === 'unsent' ? 'Send' : 'Share again';
+      sendBtn.disabled = !(req.parts || []).length;
+
+      const listEl = document.getElementById('partsFormList');
+      const parts = req.parts || [];
+      if (!parts.length) {
+        listEl.innerHTML = `<div class="empty-state compact"><p>No parts added yet.</p></div>`;
+      } else {
+        listEl.innerHTML = parts.map(p => `<div class="pl-item" data-line-id="${p.id}">
+          <div class="list-item-main">
+            <div class="title">${jobEsc(p.description || 'Unnamed part')}${p.urgent ? ' <span class="badge badge-urgent">Urgent</span>' : ''}</div>
+            <div class="sub">Qty ${p.qty || 1}${p.partNumber ? ' · ' + jobEsc(p.partNumber) : ''}</div>
+            ${p.notes ? `<div class="action-line">→ ${jobEsc(p.notes)}</div>` : ''}
+          </div>
+          <div class="list-item-actions">
+            ${p.photoThumb ? `<img class="list-item-photo" src="${p.photoThumb}" alt="Part photo">` : ''}
+          </div>
+        </div>`).join('');
+        listEl.querySelectorAll('[data-line-id]').forEach(el => {
+          el.addEventListener('click', (ev) => {
+            if (typeof window.swipeIgnoreClicksUntil === 'number' && Date.now() < window.swipeIgnoreClicksUntil) return;
+            if (ev.currentTarget.closest && ev.currentTarget.closest('.swipe-host.swipe-open')) return;
+            openPartsLineModal(el.getAttribute('data-line-id'));
+          });
+        });
+        if (typeof bindSwipeToDelete === 'function') {
+          bindSwipeToDelete(listEl, '.pl-item', (row) => ({
+            id: row.getAttribute('data-line-id'),
+            kind: 'parts-line',
+            title: 'Delete part?',
+            label: 'This part will be removed from the request.'
+          }));
+        }
+      }
+    }
+
+    function openPartsLineModal(lineIdOrNull) {
+      partsLineEditingId = lineIdOrNull;
+      const line = lineIdOrNull ? (partsFormDraft.parts || []).find(p => p.id === lineIdOrNull) : newPartsRequestLine();
+      document.getElementById('plineTitle').textContent = lineIdOrNull ? 'Edit part' : 'Add part';
+      document.getElementById('plineDesc').value = line.description || '';
+      document.getElementById('plineQty').value = line.qty || 1;
+      document.getElementById('plinePartNumber').value = line.partNumber || '';
+      document.getElementById('plineNotes').value = line.notes || '';
+      const urgentBtn = document.getElementById('btnLineUrgent');
+      if (urgentBtn) urgentBtn.classList.toggle('on', !!line.urgent);
+      const thumb = document.getElementById('plinePhotoPreview');
+      if (line.photoThumb) { thumb.src = line.photoThumb; thumb.classList.remove('hidden'); }
+      else { thumb.src = ''; thumb.classList.add('hidden'); }
+      document.getElementById('plineRemove').classList.toggle('hidden', !lineIdOrNull);
+      window.__partsLineDraftPhoto = { photoId: line.photoId, photoThumb: line.photoThumb };
+      document.getElementById('partsLineModal').classList.add('show');
+    }
+    function closePartsLineModal() {
+      document.getElementById('partsLineModal').classList.remove('show');
+      partsLineEditingId = null;
+    }
+    function savePartsLineModal() {
+      const description = document.getElementById('plineDesc').value.trim();
+      const qty = parseInt(document.getElementById('plineQty').value, 10) || 1;
+      const partNumber = document.getElementById('plinePartNumber').value.trim();
+      const notes = document.getElementById('plineNotes').value.trim();
+      if (!description) { toast('Enter a part description'); return; }
+      const urgent = document.getElementById('btnLineUrgent').classList.contains('on');
+      const photo = window.__partsLineDraftPhoto || {};
+      if (partsLineEditingId) {
+        const line = partsFormDraft.parts.find(p => p.id === partsLineEditingId);
+        Object.assign(line, { description, qty, partNumber, notes, urgent, photoId: photo.photoId || null, photoThumb: photo.photoThumb || '' });
+      } else {
+        partsFormDraft.parts.push({ id: newEntityId('prp'), description, qty, partNumber, notes, urgent, photoId: photo.photoId || null, photoThumb: photo.photoThumb || '' });
+      }
+      closePartsLineModal();
+      renderPartsForm();
+      // Local-first: persist the moment a part is actually added/edited,
+      // not only when the technician later taps the explicit Save button.
+      // Without this, navigating away before tapping Save silently lost
+      // whatever parts had just been added.
+      savePartsFormDraft(false);
+    }
+    function removePartsLineModal() {
+      if (partsLineEditingId) partsFormDraft.parts = partsFormDraft.parts.filter(p => p.id !== partsLineEditingId);
+      closePartsLineModal();
+      renderPartsForm();
+      savePartsFormDraft(false);
+    }
+
+    // readFileDataUrl exists elsewhere in this app but is private to a
+    // different module's closure, not globally accessible — this is its
+    // own small, self-contained copy rather than reaching into that
+    // module's internals for something this trivial.
+    function partsReadFileDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result);
+        fr.onerror = reject;
+        fr.readAsDataURL(file);
+      });
+    }
+    async function attachPartsRequestPhoto(file) {
+      if (!file) return;
+      try {
+        const blob = await compressImageFile(file, 1600, 0.72);
+        const id = 'pr_line_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+        await idbPutPhoto({ id, blob: blob || file, caption: '', createdAt: Date.now() });
+        const thumbBlob = await compressImageFile(file, 320, 0.6).catch(() => null);
+        const dataUrl = await partsReadFileDataUrl(thumbBlob || blob || file).catch(() => '');
+        window.__partsLineDraftPhoto = { photoId: id, photoThumb: dataUrl };
+        const thumb = document.getElementById('plinePhotoPreview');
+        thumb.src = dataUrl; thumb.classList.remove('hidden');
+        toast('Photo attached');
+      } catch (e) { toast('Could not attach photo'); }
+    }
+
+    function savePartsFormDraft(showConfirmation) {
+      if (!partsFormDraft) return;
+      if (!partsFormDraft.seq) {
+        partsFormDraft.seq = nextPartsRequestSeq();
+        // The screen header shows this once assigned — update it in place
+        // if the form is the thing currently on screen.
+        renderPartsFormHeader();
+      }
+      partsFormDraft.updatedAt = new Date().toISOString();
+      const all = loadPartsRequests();
+      const idx = all.findIndex(r => r.id === partsFormDraft.id);
+      if (idx >= 0) all[idx] = partsFormDraft; else all.unshift(partsFormDraft);
+      savePartsRequests(all);
+      if (showConfirmation) toast('Parts request saved');
+      if (partsFormDraft.jobId === detailJobId) refreshJobDetailPartsSection();
+    }
+
+    function performDeletePartsRequest(id) {
+      if (!id) { toast('No request to delete'); return; }
+      const all = loadPartsRequests();
+      const target = all.find(r => r.id === id);
+      const next = all.filter(r => r.id !== id);
+      if (next.length === all.length) { toast('Parts request not found'); closeDeleteModal(); return; }
+      savePartsRequests(next);
+      if (partsFormDraft && partsFormDraft.id === id) partsFormDraft = null;
+      closeDeleteModal();
+      toast('Parts request deleted');
+      refreshPartsList();
+      if (target && target.jobId === detailJobId) refreshJobDetailPartsSection();
+    }
+    function performDeletePartsLine(id) {
+      if (!id || !partsFormDraft) { toast('No part to delete'); return; }
+      partsFormDraft.parts = (partsFormDraft.parts || []).filter(p => p.id !== id);
+      closeDeleteModal();
+      toast('Part deleted');
+      renderPartsForm();
+      savePartsFormDraft(false);
+    }
+
+    async function sendPartsFormDraft() {
+      if (!partsFormDraft || !(partsFormDraft.parts || []).length) return;
+      savePartsFormDraft(false);
+      const shared = await sharePartsRequest(partsFormDraft);
+      if (shared && partsFormDraft.status === 'unsent') {
+        partsFormDraft.status = 'pending';
+        savePartsFormDraft(false);
+        renderPartsForm();
+        toast('Sent — moved to Pending');
+      }
+    }
+
+    function refreshJobDetailPartsSection() {
+      const job = loadJobs().find(j => j.id === detailJobId);
+      const listEl = document.getElementById('jobDetailPartsList');
+      const countEl = document.getElementById('jdPartsCount');
+      if (!job || !listEl || !countEl) return;
+      const reqs = loadPartsRequests().filter(r => r.jobId === job.id);
+      if (!reqs.length) {
+        countEl.textContent = 'None yet';
+        listEl.innerHTML = `<div class="empty-state compact"><p>No parts requests for this job yet.</p></div>`;
+        return;
+      }
+      const openN = reqs.filter(r => r.status !== 'complete').length;
+      countEl.textContent = reqs.length + ' total' + (openN ? ' · ' + openN + ' open' : '');
+      listEl.innerHTML = reqs.slice(0, 20).map(req => {
+        const sum = partsRequestSummary(req);
+        return `<div class="list-item" data-id="${req.id}">
+          <div class="list-item-main" data-action="open">
+            <div class="title">Parts Request${req.seq ? ' #' + req.seq : ''}${partsRequestHasUrgent(req) ? ' <span class="badge badge-urgent">Urgent</span>' : ''}</div>
+            <div class="sub">${sum.partsCount} part${sum.partsCount !== 1 ? 's' : ''} · ${jobEsc(formatPartsRequestDate(req.updatedAt))}</div>
+          </div>
+          <div class="list-item-actions">
+            <span class="badge ${partsRequestStatusBadgeClass(req.status)}">${partsRequestStatusLabel(req.status)}</span>
+          </div>
+        </div>`;
+      }).join('');
+      listEl.querySelectorAll('.list-item').forEach(el => {
+        const id = el.dataset.id;
+        el.querySelector('[data-action="open"]').addEventListener('click', () => openPartsForm(id));
       });
     }
 
@@ -1682,7 +2164,7 @@ const ICO = {
       } catch (e) {}
       if (!en) return 0;
       if (en.manualHours != null && en.manualHours !== '' && !isNaN(Number(en.manualHours))) return Number(en.manualHours);
-      if (en.clockIn && en.clockOut) return Math.max(0, (Number(en.clockOut) - Number(en.clockIn)) / 3600000);
+      if (en.clockIn && en.clockOut) return tcHoursFromMs(tcSpanMs(en.clockIn, en.clockOut));
       return 0;
     }
     function renderJobDetailTimecards(job) {
@@ -1704,88 +2186,30 @@ const ICO = {
       }
       listEl.innerHTML = rows.map(en => {
         const hrs = jobDetailEntryHours(en);
-        const day = en.date || '';
-        const type = en.type ? String(en.type) : '';
-        return '<div class="list-item" data-tc-id="' + String(en.id || '').replace(/"/g, '&quot;') + '">' +
-          '<div class="list-item-main" data-action="open-tc">' +
-          '<div class="title">' + jobEsc(day || 'Time entry') + '</div>' +
-          '<div class="sub">' + jobEsc([hrs.toFixed(2) + ' h', type].filter(Boolean).join(' · ')) + '</div>' +
-          '</div></div>';
+        const typeLabel = (en.type || 'bakery').charAt(0).toUpperCase() + (en.type || 'bakery').slice(1);
+        const fmt = window.tcFormatLongDate || (typeof tcFormatLongDate === 'function' ? tcFormatLongDate : null);
+        const dateStr = fmt ? fmt(en.date || en.clockIn) : (en.date || '');
+        return '<div class="tc-entry" data-id="' + String(en.id || '').replace(/"/g, '&quot;') + '">' +
+          '<div class="tc-entry-main"><div class="tc-entry-title">' + String(dateStr).replace(/</g,'&lt;') + '</div>' +
+          '<div class="tc-entry-sub">' + jobEsc(typeLabel) + '</div></div>' +
+          '<div class="tc-entry-hours">' + hrs.toFixed(2) + '</div></div>';
       }).join('');
-      listEl.querySelectorAll('[data-action="open-tc"]').forEach(el => {
+      listEl.querySelectorAll('.tc-entry').forEach(el => {
         el.addEventListener('click', () => {
-          const id = el.closest('.list-item') && el.closest('.list-item').getAttribute('data-tc-id');
+          const id = el.getAttribute('data-id');
           const open = window.tcOpenEdit || (typeof tcOpenEdit === 'function' ? tcOpenEdit : null);
-          const cards = window.openTimeCards || (typeof openTimeCards === 'function' ? openTimeCards : null);
           if (id && open) open(id);
-          else if (cards) cards();
         });
       });
-    }
-    function setJobProgressRow(id, complete, title, detail) {
-      const row = document.getElementById(id);
-      if (!row) return;
-      const icon = row.querySelector('.jd-progress-icon');
-      const text = row.querySelector('small');
-      if (icon) icon.textContent = complete ? '✓' : '○';
-      row.classList.toggle('complete', !!complete);
-      if (text) text.textContent = detail || title || '';
-    }
-
-    function refreshJobProgress(job, inspections, punchTotal, punchDone, hours) {
-      const inspectDone = inspections && inspections.length > 0 && inspections.every(i => i.status === 'Complete');
-      const punchDoneAll = punchTotal > 0 && punchDone >= punchTotal;
-      const timeDone = Number(hours || 0) > 0;
-      const completed = [inspectDone, punchDoneAll, timeDone].filter(Boolean).length;
-      const count = document.getElementById('jdProgressCount');
-      const title = document.getElementById('jdProgressTitle');
-      if (count) count.textContent = completed + ' / 3 complete';
-      if (title) title.textContent = job.status === 'Complete' ? 'Job complete' : (completed === 3 ? 'Ready to complete' : 'Work in progress');
-      setJobProgressRow('jdProgressInspection', inspectDone, 'Inspection', inspections.length ? (inspectDone ? inspections.length + ' complete' : inspections.filter(i => i.status !== 'Complete').length + ' open') : 'Not started');
-      setJobProgressRow('jdProgressPunchlist', punchDoneAll, 'Punchlist', punchTotal ? (punchDone + ' of ' + punchTotal + ' complete') : 'Not started');
-      setJobProgressRow('jdProgressTime', timeDone, 'Time', timeDone ? Number(hours).toFixed(2) + ' hours recorded' : 'No hours recorded');
-      const btn = document.getElementById('btnCompleteJob');
-      if (btn) {
-        btn.textContent = job.status === 'Complete' ? 'Reopen Job' : 'Complete Job';
-        btn.classList.toggle('is-complete', job.status === 'Complete');
+      if (typeof bindSwipeToDelete === 'function') {
+        bindSwipeToDelete(listEl, '.tc-entry', (row) => ({
+          id: row.getAttribute('data-id'),
+          kind: 'timecard',
+          title: 'Delete time entry?',
+          label: 'This time entry will be permanently deleted.'
+        }));
       }
     }
-
-    async function toggleJobComplete() {
-      if (!detailJobId) return;
-      const list = loadJobs();
-      const job = list.find(j => j.id === detailJobId);
-      if (!job) return;
-      if (job.status === 'Complete') {
-        job.status = 'In Progress';
-        saveJobs(list);
-        refreshHomeCurrentJob();
-        await refreshJobDetail();
-        toast('Job reopened');
-        return;
-      }
-      let openWarnings = [];
-      try {
-        const inspections = loadInspections().filter(i => i.jobId === job.id);
-        if (inspections.some(i => i.status !== 'Complete')) openWarnings.push('inspection still open');
-        if (typeof window.getPunchlistSummaries === 'function') {
-          const rows = await window.getPunchlistSummaries();
-          const row = (rows || []).find(r => r && String(r.jobId) === String(job.id));
-          if (row && Number(row.total || 0) > Number(row.complete || 0)) openWarnings.push('punchlist has open items');
-        }
-      } catch (e) {}
-      if (openWarnings.length) {
-        const ok = window.confirm('This job still has ' + openWarnings.join(' and ') + '.\n\nComplete the job anyway?');
-        if (!ok) return;
-      }
-      job.status = 'Complete';
-      job.completedAt = new Date().toISOString();
-      saveJobs(list);
-      refreshHomeCurrentJob();
-      await refreshJobDetail();
-      toast('Job completed');
-    }
-
     async function refreshJobDetail() {
       const job = loadJobs().find(j => j.id === detailJobId);
       if (!job) {
@@ -1812,7 +2236,6 @@ const ICO = {
       document.getElementById('jdDates').textContent = formatJobDateRange(job) || '—';
       document.getElementById('jdPO').textContent = dash(job.po);
       renderJobDetailTimecards(job);
-      const jobHours = jobDetailTimecardEntries(job).reduce((sum, en) => sum + jobDetailEntryHours(en), 0);
 
       const scopeCard = document.getElementById('jobDetailScopeCard');
       const scope = (job.scope || '').trim();
@@ -1916,7 +2339,7 @@ const ICO = {
             <div class="sub">${total} item${total !== 1 ? 's' : ''} · ${done} complete${openN ? ' · ' + openN + ' open' : ''}</div>
           </div>
           <div class="list-item-actions">
-            <span class="badge ${allDone ? 'badge-complete' : 'badge-draft'}">${allDone ? 'Complete' : 'Open'}</span>
+            <span class="badge ${allDone ? 'badge-complete' : 'badge-draft'}">${allDone ? 'Complete' : 'Pending'}</span>
           </div>
         </div>`;
         }).join('');
@@ -1941,7 +2364,7 @@ const ICO = {
           });
         });
       }
-      refreshJobProgress(job, inspections, punchTotal, punchDone, jobHours);
+      refreshJobDetailPartsSection();
     }
 
     function openJob(id) {
@@ -2146,7 +2569,7 @@ const ICO = {
         list[idx] = { ...list[idx], ...payload };
         toast('Job updated');
       } else {
-        const newId = 'job_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+        const newId = newEntityId('job');
         list.unshift(ensureJobIdentity({
           id: newId,
           createdAt: new Date().toISOString(),
@@ -2243,6 +2666,258 @@ const ICO = {
     }
 
 
+
+    /* ---- Swipe to delete (Mail-style) ---- */
+    const SWIPE_ACTION_W = 78;
+    const SWIPE_OPEN_AT = SWIPE_ACTION_W * 0.375;
+    window.swipeOpenHost = null;
+    window.swipeIgnoreClicksUntil = 0;
+
+    function swipeHaptic() {
+      try {
+        if (navigator.vibrate) navigator.vibrate(8);
+      } catch (e) {}
+    }
+
+    function swipeApply(host, x, withSpring) {
+      if (!host) return;
+      const front = host._swipeFront || host.querySelector('.list-item, .pl-item, .tc-entry');
+      const disc = host._swipeDisc || host.querySelector('.swipe-delete-disc');
+      const label = host._swipeLabel || host.querySelector('.swipe-delete-label');
+      const easeOpen = 'transform 0.72s cubic-bezier(0.08, 0.78, 0.08, 1)';
+      const easeClose = 'transform 0.46s cubic-bezier(0.22, 0.82, 0.2, 1)';
+      const opening = withSpring && x < -2;
+      const ease = opening ? easeOpen : easeClose;
+      if (front) {
+        front.style.transition = withSpring ? ease : 'none';
+        front.style.transform = 'translate3d(' + x + 'px,0,0)';
+      }
+      const p = Math.max(0, Math.min(1.15, (-x) / SWIPE_ACTION_W));
+      const scale = Math.max(0.08, Math.min(1, 0.08 + 0.92 * Math.min(1, p)));
+      const lab = Math.max(0, Math.min(1, (p - 0.28) / 0.55));
+      if (disc) {
+        disc.style.transition = withSpring ? (ease + ', opacity 0.4s ease') : 'none';
+        disc.style.transform = 'scale(' + scale + ')';
+      }
+      if (label) {
+        label.style.transition = withSpring ? 'opacity 0.28s ease' : 'none';
+        label.style.opacity = String(lab);
+      }
+    }
+
+    function swipeResist(x) {
+      if (x > 0) return x * 0.16;
+      const abs = -x;
+      if (abs <= SWIPE_ACTION_W) return x;
+      const extra = abs - SWIPE_ACTION_W;
+      return -(SWIPE_ACTION_W + extra * 0.2);
+    }
+
+    function swipeDisarm(host) {
+      if (!host) return;
+      host.classList.remove('swipe-ready');
+      if (host._swipeReadyT) { clearTimeout(host._swipeReadyT); host._swipeReadyT = null; }
+      if (host._swipeReadyRaf) { cancelAnimationFrame(host._swipeReadyRaf); host._swipeReadyRaf = 0; }
+    }
+    function swipeArm(host) {
+      if (!host || !host.classList.contains('swipe-open')) return;
+      host.classList.add('swipe-ready');
+    }
+    function swipeReadX(front) {
+      if (!front) return 0;
+      const t = getComputedStyle(front).transform;
+      if (!t || t === 'none') return 0;
+      if (t.indexOf('matrix3d') === 0) {
+        const p = t.slice(9, -1).split(',');
+        return parseFloat(p[12]) || 0;
+      }
+      if (t.indexOf('matrix') === 0) {
+        const p = t.slice(7, -1).split(',');
+        return parseFloat(p[4]) || 0;
+      }
+      return 0;
+    }
+    function swipeWatchArm(host) {
+      if (!host) return;
+      const front = host._swipeFront || host.querySelector('.list-item, .pl-item, .tc-entry');
+      const tick = () => {
+        if (!host.classList.contains('swipe-open')) return;
+        const x = swipeReadX(front);
+        if (-x >= SWIPE_ACTION_W * 0.8) {
+          swipeArm(host);
+          host._swipeReadyRaf = 0;
+          return;
+        }
+        host._swipeReadyRaf = requestAnimationFrame(tick);
+      };
+      host._swipeReadyRaf = requestAnimationFrame(tick);
+    }
+    function swipeCloseHost(host, spring) {
+      if (!host) return;
+      swipeDisarm(host);
+      const front = host._swipeFront || host.querySelector('.list-item, .pl-item, .tc-entry');
+      swipeApply(host, 0, spring !== false);
+      host.classList.remove('swipe-open');
+      host._swipeX = 0;
+      if (window.swipeOpenHost === host) window.swipeOpenHost = null;
+    }
+
+    function swipeCloseAll(except) {
+      document.querySelectorAll('.swipe-host.swipe-open').forEach(h => {
+        if (h !== except) swipeCloseHost(h, true);
+      });
+    }
+
+    function swipeOpenHostTo(host) {
+      swipeDisarm(host);
+      swipeApply(host, -SWIPE_ACTION_W, true);
+      host.classList.add('swipe-open');
+      host._swipeX = -SWIPE_ACTION_W;
+      window.swipeOpenHost = host;
+      swipeWatchArm(host);
+    }
+
+    function bindSwipeToDelete(container, rowSelector, specFn) {
+      if (!container) return;
+      const rows = container.querySelectorAll(rowSelector);
+      rows.forEach(row => {
+        if (row.closest && row.closest('.swipe-host')) return;
+        if (row.dataset.swipeSkip === '1') return;
+        const host = document.createElement('div');
+        host.className = 'swipe-host' + (row.classList.contains('tc-entry') ? ' swipe-host-tc' : '');
+        const actions = document.createElement('div');
+        actions.className = 'swipe-actions';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'swipe-delete-btn';
+        btn.setAttribute('aria-label', 'Delete');
+        btn.innerHTML = '<span class="swipe-delete-disc"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7.4 7.15h9.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M10.55 7.15V5.7A1.15 1.15 0 0 1 11.7 4.55h.6A1.15 1.15 0 0 1 13.45 5.7v1.45" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.55 7.4l.62 11.15A1.85 1.85 0 0 0 10 20.35h4a1.85 1.85 0 0 0 1.83-1.8L16.45 7.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.35 10.55v6.05M13.65 10.55v6.05" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span><span class="swipe-delete-label">Delete</span>';
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!host.classList.contains('swipe-ready')) return;
+          const spec = specFn(row, host);
+          if (!spec) return;
+          if (typeof showDeleteConfirm === 'function') {
+            showDeleteConfirm(spec.id, spec.kind, spec.title, spec.label);
+          }
+        });
+        actions.appendChild(btn);
+        row.parentNode.insertBefore(host, row);
+        host.appendChild(actions);
+        host.appendChild(row);
+        host._swipeFront = row;
+        host._swipeDisc = host.querySelector('.swipe-delete-disc');
+        host._swipeLabel = host.querySelector('.swipe-delete-label');
+        host._swipeX = 0;
+        swipeApply(host, 0, false);
+
+        let pid = null, startX = 0, startY = 0, lastX = 0, baseX = 0;
+        let axis = null, tracking = false, crossed = false;
+
+        const front = row;
+
+        const onDown = (e) => {
+          if (e.pointerType === 'mouse' && e.button !== 0) return;
+          if (e.target && e.target.closest && e.target.closest('.swipe-delete-btn, button, a, input, select, textarea, img')) {
+            if (e.target.closest && e.target.closest('.swipe-delete-btn')) return;
+            if (host.classList.contains('swipe-open')) {
+              swipeCloseHost(host, true);
+              window.swipeIgnoreClicksUntil = Date.now() + 280;
+              e.preventDefault();
+            }
+            return;
+          }
+          if (window.swipeOpenHost && window.swipeOpenHost !== host) swipeCloseAll(host);
+          pid = e.pointerId;
+          try { host.setPointerCapture(pid); } catch (_) {}
+          startX = lastX = e.clientX;
+          startY = e.clientY;
+          axis = null;
+          tracking = true;
+          crossed = false;
+          baseX = host._swipeX || 0;
+          swipeApply(host, baseX, false);
+        };
+
+        const onMove = (e) => {
+          if (!tracking || e.pointerId !== pid) return;
+          const dx = e.clientX - startX;
+          const dy = e.clientY - startY;
+          if (!axis) {
+            if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+            axis = (Math.abs(dx) > Math.abs(dy) * 1.2) ? 'h' : 'v';
+            if (axis === 'v') {
+              tracking = false;
+              try { host.releasePointerCapture(pid); } catch (_) {}
+              pid = null;
+              return;
+            }
+          }
+          if (axis !== 'h') return;
+          e.preventDefault();
+          swipeDisarm(host);
+          lastX = e.clientX;
+          const raw = baseX + dx;
+          const x = swipeResist(raw);
+          host._swipeX = x;
+          swipeApply(host, x, false);
+          if (-x >= SWIPE_ACTION_W * 0.8) {
+            host.classList.add('swipe-open');
+            swipeArm(host);
+          } else {
+            swipeDisarm(host);
+          }
+          if (!crossed && x <= -SWIPE_OPEN_AT) {
+            crossed = true;
+            swipeHaptic();
+          }
+        };
+
+        const onUp = (e) => {
+          if (pid == null || (e && e.pointerId !== pid)) return;
+          try { host.releasePointerCapture(pid); } catch (_) {}
+          const wasH = axis === 'h';
+          const x = host._swipeX || 0;
+          tracking = false;
+          axis = null;
+          pid = null;
+          if (!wasH) return;
+          window.swipeIgnoreClicksUntil = Date.now() + 280;
+          if (x <= -SWIPE_OPEN_AT) window.swipeOpenHostTo(host);
+          else swipeCloseHost(host, true);
+        };
+
+        host.addEventListener('pointerdown', onDown);
+        host.addEventListener('pointermove', onMove, { passive: false });
+        host.addEventListener('pointerup', onUp);
+        host.addEventListener('pointercancel', onUp);
+
+        row.addEventListener('click', (e) => {
+          if (Date.now() < window.swipeIgnoreClicksUntil) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+          if (host.classList.contains('swipe-open')) {
+            e.preventDefault();
+            e.stopPropagation();
+            swipeCloseHost(host, true);
+          }
+        }, true);
+      });
+    }
+    window.swipeOpenHostTo = swipeOpenHostTo;
+    window.bindSwipeToDelete = bindSwipeToDelete;
+    window.swipeCloseAll = swipeCloseAll;
+
+    document.addEventListener('scroll', () => swipeCloseAll(), { capture: true, passive: true });
+    document.addEventListener('touchstart', (e) => {
+      if (!window.swipeOpenHost) return;
+      if (e.target && window.swipeOpenHost.contains(e.target)) return;
+      swipeCloseAll();
+    }, { passive: true });
+
     function showDeleteConfirm(id, kind, title, label) {
       pendingDeleteId = id;
       pendingDeleteKind = kind || 'inspection';
@@ -2338,8 +3013,7 @@ const ICO = {
         if (!impl) { toast('Delete failed'); closeDeleteModal(); return; }
         impl(arg);
       };
-      if (kind === 'visit') run(window.performDeleteVisit || performDeleteVisit, id);
-      else if (kind === 'job') run(window.performDeleteJob || performDeleteJob, id);
+      if (kind === 'job') run(window.performDeleteJob || performDeleteJob, id);
       else if (kind === 'punchlist-item') run(window.performDeletePunchlistItem || performDeletePunchlistItem, id);
       else if (kind === 'punchlist-photo') {
         const fn = window.removePhoto || removePhoto;
@@ -2349,6 +3023,8 @@ const ICO = {
         toast('Photo deleted');
       }
       else if (kind === 'punchlist') run(window.performDeletePunchlist || performDeletePunchlist, id);
+      else if (kind === 'parts-request') run(window.performDeletePartsRequest || performDeletePartsRequest, id);
+      else if (kind === 'parts-line') run(window.performDeletePartsLine || performDeletePartsLine, id);
       else if (kind === 'timecard') run(window.performDeleteTimecard, id);
       else if (kind === 'inspect-photo') run(window.performDeleteInspectPhoto || performDeleteInspectPhoto, id);
       else run(window.performDeleteInspection || performDeleteInspection, id);
@@ -2587,6 +3263,79 @@ const ICO = {
       setHeader('Jobs');
       refreshJobsList();
     });
+
+    // ===== PARTS REQUESTS bindings =====
+    const homeTileParts = document.getElementById('homeTileParts');
+    if (homeTileParts) homeTileParts.addEventListener('click', () => {
+      closeSearch();
+      setPartsListTab('unsent');
+      showScreen('screenPartsList');
+      setHeader('Parts Requests');
+      landPartsSeg();
+    });
+    const btnNewParts = document.getElementById('btnNewParts');
+    if (btnNewParts) btnNewParts.addEventListener('click', () => openPartsForm(null));
+    document.querySelectorAll('#partsSeg .seg-btn').forEach(btn => {
+      btn.addEventListener('click', () => setPartsListTab(btn.getAttribute('data-status')));
+    });
+    const btnJobOpenParts = document.getElementById('btnJobOpenParts');
+    if (btnJobOpenParts) btnJobOpenParts.addEventListener('click', () => openPartsForm(null, detailJobId));
+    const btnPartsUrgent = document.getElementById('btnPartsUrgent');
+    if (btnPartsUrgent) btnPartsUrgent.addEventListener('click', () => {
+      if (!partsFormDraft) return;
+      partsFormDraft.urgent = !partsFormDraft.urgent;
+      renderPartsForm();
+      savePartsFormDraft(false);
+    });
+    const btnLineUrgent = document.getElementById('btnLineUrgent');
+    if (btnLineUrgent) btnLineUrgent.addEventListener('click', () => {
+      btnLineUrgent.classList.toggle('on');
+    });
+    const btnPartsSave = document.getElementById('btnPartsSave');
+    if (btnPartsSave) btnPartsSave.addEventListener('click', () => {
+      savePartsFormDraft(true);
+      showScreen('screenPartsList');
+      setHeader('Parts Requests');
+      refreshPartsList();
+      landPartsSeg();
+    });
+    const btnPartsSend = document.getElementById('btnPartsSend');
+    if (btnPartsSend) btnPartsSend.addEventListener('click', () => { sendPartsFormDraft(); });
+    const btnAddPartsLine = document.getElementById('btnAddPartsLine');
+    if (btnAddPartsLine) btnAddPartsLine.addEventListener('click', () => openPartsLineModal(null));
+    const partsLineModal = document.getElementById('partsLineModal');
+    if (partsLineModal) partsLineModal.addEventListener('click', (e) => { if (e.target.id === 'partsLineModal') closePartsLineModal(); });
+    const plineCancel = document.getElementById('plineCancel');
+    if (plineCancel) plineCancel.addEventListener('click', closePartsLineModal);
+    const plineSave = document.getElementById('plineSave');
+    if (plineSave) plineSave.addEventListener('click', savePartsLineModal);
+    const plineRemove = document.getElementById('plineRemove');
+    if (plineRemove) plineRemove.addEventListener('click', removePartsLineModal);
+    const plinePhotoInput = document.getElementById('plinePhotoInput');
+    if (plinePhotoInput) plinePhotoInput.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (file) attachPartsRequestPhoto(file);
+    });
+    const btnPartsCopyText = document.getElementById('btnPartsCopyText');
+    if (btnPartsCopyText) btnPartsCopyText.addEventListener('click', async () => {
+      const ta = document.getElementById('partsShareText');
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(ta.value);
+        else { ta.select(); document.execCommand('copy'); }
+        toast('Copied to clipboard');
+      } catch (e) { ta.select(); toast('Select and copy the text below'); }
+      if (partsFormDraft && partsFormDraft.status === 'unsent') {
+        partsFormDraft.status = 'pending';
+        savePartsFormDraft(false);
+        renderPartsForm();
+      }
+    });
+    const btnPartsShareClose = document.getElementById('btnPartsShareClose');
+    if (btnPartsShareClose) btnPartsShareClose.addEventListener('click', () => {
+      closePartsShareSheet();
+    });
+
     document.getElementById('btnCancelJob').addEventListener('click', () => {
       editingJobId = null;
       document.getElementById('btnDeleteJob').classList.add('hidden');
@@ -2605,14 +3354,6 @@ const ICO = {
     });
     document.getElementById('btnJobStartInspection').addEventListener('click', () => startInspectionForDetailJob());
     document.getElementById('btnJobOpenPunchlist').addEventListener('click', () => startPunchlistForDetailJob());
-    const completeJobBtn = document.getElementById('btnCompleteJob');
-    if (completeJobBtn) completeJobBtn.addEventListener('click', () => { toggleJobComplete().catch(e => { console.error(e); toast('Could not update job'); }); });
-    const jdInspectProgress = document.getElementById('jdProgressInspection');
-    if (jdInspectProgress) jdInspectProgress.addEventListener('click', () => startInspectionForDetailJob());
-    const jdPunchProgress = document.getElementById('jdProgressPunchlist');
-    if (jdPunchProgress) jdPunchProgress.addEventListener('click', () => startPunchlistForDetailJob());
-    const jdTimeProgress = document.getElementById('jdProgressTime');
-    if (jdTimeProgress) jdTimeProgress.addEventListener('click', () => openTimeCards());
 
     const btnJobMachinePopup = document.getElementById('btnJobMachinePopup');
     if (btnJobMachinePopup) btnJobMachinePopup.addEventListener('click', () => {
@@ -3333,12 +4074,8 @@ const ICO = {
           extraSectionTab = null;
           const tapped = parseInt(d.dataset.idx, 10);
           if (tapped === currentSectionIndex && document.getElementById('screenInspect').classList.contains('active')) {
-            inspectListMode = !inspectListMode;
-            saveCurrentDraft();
-            renderSection(false);
             return;
           }
-          inspectListMode = false;
           currentSectionIndex = tapped;
           currentItemIndex = 0;
           showScreen('screenInspect');
@@ -3408,110 +4145,43 @@ const ICO = {
       toast(n ? ('Section marked N/A') : 'Nothing to mark');
     }
     function scrollToNextOpenItem(afterId) {
-      goToNextInspectItem();
+      const items = currentSectionItems();
+      const idx = items.findIndex(it => it.item_id === afterId);
+      for (let i = idx + 1; i < items.length; i++) {
+        if (!results[items[i].item_id] || !results[items[i].item_id].condition) {
+          const el = document.getElementById('item-' + items[i].item_id);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          return;
+        }
+      }
     }
     function currentSectionItems() {
       if (!APP_DATA || !APP_DATA.sections || !APP_DATA.sections[currentSectionIndex]) return [];
       return getItemsForSection(APP_DATA.sections[currentSectionIndex].section_id);
     }
-    function animateInspectOut(dir, then) {
-      if (inspectListMode) { then(); return; }
-      const card = document.querySelector('#itemsContainer .item-card');
-      if (!card) { then(); return; }
-      card.classList.remove('inspect-in-left', 'inspect-in-right');
-      void card.offsetWidth;
-      card.classList.add(dir === 'next' ? 'inspect-out-left' : 'inspect-out-right');
-      let done = false;
-      const finish = () => { if (done) return; done = true; then(); };
-      card.addEventListener('transitionend', finish, { once: true });
-      setTimeout(finish, 560);
-    }
     function goToNextInspectItem() {
-      if (inspectListMode) {
-        inspectListMode = false;
+      if (currentSectionIndex < APP_DATA.sections.length - 1) {
+        currentSectionIndex += 1;
+        currentItemIndex = 0;
         saveCurrentDraft();
-        renderSection(false);
+        renderSection(true);
+        window.scrollTo(0, 0);
         return;
       }
-      const items = currentSectionItems();
-      animateInspectOut('next', () => {
-        inspectSlideDir = 'next';
-        if (currentItemIndex < items.length - 1) {
-          currentItemIndex += 1;
-          saveCurrentDraft();
-          renderSection(false);
-          window.scrollTo(0, 0);
-          return;
-        }
-        if (currentSectionIndex < APP_DATA.sections.length - 1) {
-          currentSectionIndex += 1;
-          currentItemIndex = 0;
-          saveCurrentDraft();
-          renderSection(true);
-          window.scrollTo(0, 0);
-          return;
-        }
-        updateFindings();
-        saveCurrentDraft();
-        showFindings();
-      });
+      updateFindings();
+      saveCurrentDraft();
+      showFindings();
     }
 
-    let inspectSwipeX = 0, inspectSwipeY = 0, inspectSwipeOn = false;
-    function bindInspectSwipe(container) {
-      if (!container || container.dataset.swipeBound === '1') return;
-      container.dataset.swipeBound = '1';
-      const start = (x, y) => { inspectSwipeOn = true; inspectSwipeX = x; inspectSwipeY = y; };
-      const end = (x, y) => {
-        if (!inspectSwipeOn) return;
-        inspectSwipeOn = false;
-        const dx = x - inspectSwipeX;
-        const dy = y - inspectSwipeY;
-        if (inspectListMode) return;
-        if (Math.abs(dx) < 56) return;
-        if (Math.abs(dx) < Math.abs(dy) * 1.15) return;
-        if (dx < 0) goToNextInspectItem();
-        else goToPrevInspectItem();
-      };
-      container.addEventListener('touchstart', (e) => {
-        if (!e.changedTouches || !e.changedTouches[0]) return;
-        start(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
-      }, { passive: true });
-      container.addEventListener('touchend', (e) => {
-        if (!e.changedTouches || !e.changedTouches[0]) return;
-        end(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
-      }, { passive: true });
-      container.addEventListener('pointerdown', (e) => {
-        if (e.pointerType === 'mouse' && e.button !== 0) return;
-        start(e.clientX, e.clientY);
-      });
-      container.addEventListener('pointerup', (e) => end(e.clientX, e.clientY));
-    }
     function goToPrevInspectItem() {
-      if (inspectListMode) {
-        inspectListMode = false;
+      if (currentSectionIndex > 0) {
+        currentSectionIndex -= 1;
+        const prevItems = currentSectionItems();
+        currentItemIndex = Math.max(0, prevItems.length - 1);
         saveCurrentDraft();
-        renderSection(false);
-        return;
+        renderSection(true);
+        window.scrollTo(0, 0);
       }
-      animateInspectOut('prev', () => {
-        inspectSlideDir = 'prev';
-        if (currentItemIndex > 0) {
-          currentItemIndex -= 1;
-          saveCurrentDraft();
-          renderSection(false);
-          window.scrollTo(0, 0);
-          return;
-        }
-        if (currentSectionIndex > 0) {
-          currentSectionIndex -= 1;
-          const prevItems = currentSectionItems();
-          currentItemIndex = Math.max(0, prevItems.length - 1);
-          saveCurrentDraft();
-          renderSection(true);
-          window.scrollTo(0, 0);
-        }
-      });
     }
 
     function choiceTone(value) {
@@ -3550,8 +4220,8 @@ const ICO = {
       }
 
       const container = document.getElementById('itemsContainer');
-      const visible = inspectListMode ? items : (items[currentItemIndex] ? [items[currentItemIndex]] : []);
-      container.classList.toggle('inspect-list-mode', !!inspectListMode);
+      const visible = items;
+      container.classList.add('inspect-list-mode');
       container.innerHTML = visible.map(item => {
         const res = results[item.item_id] || {};
         const isAnswered = !!res.condition;
@@ -3562,7 +4232,8 @@ const ICO = {
         else if (isFair) cardClass += ' fair';
         else if (res.condition === 'N/A') cardClass += ' na';
         else if (isAnswered) cardClass += ' answered';
-        const compact = inspectListMode && isAnswered && isCleanResult(item, res.condition);
+        const compact = isAnswered && isCleanResult(item, res.condition);
+        if (compact) cardClass += ' compact';
 
         const choices = (item.choices || '').split('|').filter(Boolean);
         const choiceHtml = choices.map(c => {
@@ -3604,7 +4275,7 @@ const ICO = {
         }
 
         const photoHtml = res.photoDataUrl
-          ? `<div class="photo-area has-photo"><img class="photo-preview" src="${res.photoDataUrl}" alt="" /></div>`
+          ? `<div class="pl-photo-block"><div class="pl-photo-preview-wrap"><img class="photo-preview" src="${res.photoDataUrl}" alt="" /></div></div>`
           : '';
 
         return `
@@ -3616,16 +4287,6 @@ const ICO = {
             ${findingHtml}
           </div>`;
       }).join('');
-      if (!inspectListMode && inspectSlideDir) {
-        const card = container.querySelector('.item-card');
-        if (card) {
-          card.classList.add(inspectSlideDir === 'next' ? 'inspect-in-right' : 'inspect-in-left');
-          card.addEventListener('animationend', () => {
-            card.classList.remove('inspect-in-right', 'inspect-in-left');
-          }, { once: true });
-        }
-        inspectSlideDir = null;
-      }
 
       container.querySelectorAll('.item-card .photo-preview').forEach(img => {
         img.addEventListener('click', (e) => {
@@ -3660,7 +4321,6 @@ const ICO = {
           if (!showsFindingPanel(item, value)) {
             delete results[itemId].impacts;
             delete results[itemId].notes;
-            delete results[itemId].photoDataUrl;
             delete results[itemId].severity;
           }
           updateFindings();
@@ -3683,22 +4343,6 @@ const ICO = {
           title.closest('.item-card').classList.toggle('expanded');
         });
       });
-      if (inspectListMode) {
-        container.querySelectorAll('.item-card').forEach(card => {
-          card.addEventListener('click', (e) => {
-            if (e.target.closest('.choice-btn, .finding-panel, button, textarea, select, input')) return;
-            const id = parseInt(String(card.id || '').replace('item-', ''), 10);
-            const itemsNow = currentSectionItems();
-            const idx = itemsNow.findIndex(it => it.item_id === id);
-            if (idx < 0) return;
-            inspectListMode = false;
-            currentItemIndex = idx;
-            saveCurrentDraft();
-            inspectSlideDir = 'next';
-            renderSection(false);
-          });
-        });
-      }
       const markBtn = document.getElementById('btnMarkRestGood');
       if (markBtn && !markBtn.dataset.bound) {
         markBtn.dataset.bound = '1';
@@ -3791,8 +4435,6 @@ const ICO = {
         });
       });
 
-      bindInspectSwipe(container);
-
       // Update next button text
       const lastItem = currentItemIndex >= items.length - 1;
       const lastSection = currentSectionIndex === APP_DATA.sections.length - 1;
@@ -3876,7 +4518,6 @@ const ICO = {
     };
     window.startInspectFromHome = function() {
       extraSectionTab = null;
-      inspectListMode = false;
       currentSectionIndex = 0;
       currentItemIndex = 0;
       showScreen('screenInspect');
@@ -3975,13 +4616,20 @@ const ICO = {
           const sections = APP_DATA.sections || [];
           const sidx = sections.findIndex(s => s.section === item.section || s.section_id === item.section_id);
           extraSectionTab = null;
-          inspectListMode = false;
           if (sidx >= 0) currentSectionIndex = sidx;
           const secItems = currentSectionItems();
           const iidx = secItems.findIndex(it => it.item_id === id);
           currentItemIndex = iidx >= 0 ? iidx : 0;
           showScreen('screenInspect');
           renderSection(true);
+          requestAnimationFrame(() => {
+            const target = document.getElementById('item-' + id);
+            if (target) {
+              target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              target.classList.add('item-card-highlight');
+              setTimeout(() => target.classList.remove('item-card-highlight'), 1600);
+            }
+          });
         });
       });
     }
@@ -4119,7 +4767,6 @@ const ICO = {
     const startInspectBtn = document.getElementById('btnInspectHomeStart');
     if (startInspectBtn) startInspectBtn.addEventListener('click', () => {
       extraSectionTab = null;
-      inspectListMode = false;
       const items = currentSectionItems();
       const open = items.findIndex(it => !results[it.item_id] || !results[it.item_id].condition);
       if (open >= 0) currentItemIndex = open;
@@ -4263,8 +4910,11 @@ const ICO = {
         if (has('jobPickerModal')) { closeJobPicker(); closed = true; }
         if (has('plExportSheet')) { closePlExportSheet(); closed = true; }
         if (has('saveSheet')) { closeSaveSheet(); closed = true; }
+        if (has('tcWeekPickSheet')) { tcCloseWeekPick(); closed = true; }
         if (has('tcExportSheet')) { tcCloseExportSheet(); closed = true; }
         if (has('plLinkJobSheet')) { closePunchlistLinkSheet(); closed = true; }
+        if (has('partsLineModal')) { closePartsLineModal(); closed = true; }
+        if (has('partsShareSheet')) { closePartsShareSheet(); closed = true; }
         if (has('tcNameSheet')) {
           const el = document.getElementById('tcNameSheet');
           el.classList.remove('show'); el.hidden = true; el.setAttribute('hidden','');
@@ -4330,11 +4980,14 @@ const ICO = {
       } else if (previousId === 'screenPunchlistList') {
         setHeader('Punchlist');
         if (typeof refreshPunchlistHome === 'function') refreshPunchlistHome();
+      } else if (previousId === 'screenPartsList') {
+        setHeader('Parts Requests');
+        if (typeof refreshPartsList === 'function') refreshPartsList();
       } else if (previousId === 'screenTime') {
         setHeader('Time Cards');
         if (typeof tcRefresh === 'function') tcRefresh();
       } else if (previousId === 'screenTimeWeek') {
-        if (typeof tcRenderRecords === 'function') tcRenderRecords();
+        if (typeof tcRenderWeekDetail === 'function') tcRenderWeekDetail();
       }
     });
     document.getElementById('btnNotesNext').addEventListener('click', () => {
@@ -4414,7 +5067,6 @@ const ICO = {
 
 
     // ========== PDF REPORT ==========
-    function findRelatedVisit(ins) { return null; }
     const LEMATIC_LOGO_JPG = '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';
     async function generatePDFReport() {
       if (!currentInspection) {
@@ -4454,15 +5106,12 @@ const ICO = {
       const tech = currentInspection.technician || '';
       const date = currentInspection.date || '';
       const notes = (getNotesPlain() || String(currentInspection.summaryNotes || '').replace(/<[^>]+>/g, ' ')).trim();
-      let visit = findRelatedVisit(currentInspection);
-      if (!visit) {
-        try {
-          const live = collectVisit();
-          const same = String(live.customer || '').toLowerCase().trim() === String(currentInspection.customer || '').toLowerCase().trim();
-          if (same && (live.summary || live.scopeText || live.arrival || (live.findings||[]).length || (live.parts||[]).length)) visit = live;
-        } catch (e) {}
-      }
-      const combined = !!visit;
+      // A separate "visit letter" record was part of an earlier design
+      // (before Jobs existed). It was never finished — the code called an
+      // undefined collectVisit() and silently caught the ReferenceError —
+      // so this always produced a plain inspection report anyway. Made
+      // explicit below rather than throwing on every export.
+      const combined = false;
 
       function condOf(id) {
         return (results[id] && results[id].condition) || '';
@@ -4735,62 +5384,6 @@ const ICO = {
         doc.setFontSize(9);
         doc.text('No summary notes recorded for this inspection.', L, y);
         y += 8;
-      }
-
-      if (combined) {
-        function writePara(titleKicker, title, body) {
-          if (!body) return;
-          need(20);
-          doc.setTextColor(212, 34, 59);
-          doc.setFont('helvetica', 'normal');
-          doc.setFontSize(8);
-          doc.text(titleKicker, L, y);
-          y += 6;
-          doc.setTextColor(20, 20, 24);
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(16);
-          doc.text(title, L, y);
-          y += 8;
-          doc.setFont('helvetica', 'normal');
-          doc.setFontSize(9.5);
-          String(body).split('\n').forEach(para => {
-            if (!para.trim()) { y += 3; return; }
-            wrap(para, usable, 9.5).forEach(line => {
-              need(6);
-              doc.text(line, L, y);
-              y += 5;
-            });
-            y += 2;
-          });
-          y += 4;
-        }
-        newPage();
-                const letter = visit.letter || visit.arrival || visitNarrative(visit);
-        const done = visit.done || [visit.inspectIntro, tripPlainBlocks(visit.inspectBlocks), visit.prodIntro, tripPlainBlocks(visit.prodBlocks)].filter(Boolean).join('\n\n');
-        const order = visit.order || visitPartsText(visit);
-        const close = visit.close || visit.summary || '';
-        writePara('VISIT LETTER', 'What happened on site', String(letter || '').replace(/<[^>]+>/g, ' ').trim());
-        if (done) writePara('ON SITE', 'Completed on site', done);
-        if (order) writePara('ORDER NOW', 'Parts to order', order);
-        if (close) writePara('CONCLUSION', 'Conclusion', close);
-        const vphotos = (visit.photos || []).map(ph => (typeof ph === 'string' ? ph : (ph && ph.url) || '')).filter(Boolean);
-        if (vphotos.length) {
-          need(56);
-          doc.setTextColor(212, 34, 59);
-          doc.setFontSize(8);
-          doc.text('TRIP PHOTOS', L, y);
-          y += 6;
-          const pw = (usable - 4) / 2;
-          const ph = 42;
-          vphotos.slice(0, 4).forEach((src, i) => {
-            if (i === 2) { y += ph + 8; }
-            need(ph + 8);
-            const x = L + (i % 2) * (pw + 4);
-            try { doc.addImage(src, 'JPEG', x, y, pw, ph); }
-            catch (e) { try { doc.addImage(src, 'PNG', x, y, pw, ph); } catch (e2) {} }
-          });
-          y += ph + 10;
-        }
       }
 
       // Primary findings
@@ -5400,15 +5993,25 @@ const ICO = {
 
     document.getElementById('btnSearch').addEventListener('click', () => {
       const bar = document.getElementById('searchBar');
-      const isOpen = bar.classList.toggle('show');
-      if (isOpen) {
-        document.body.classList.add('search-open');
-        const inp = document.getElementById('inpSearch');
-        inp.focus();
-        renderSearchResults();
-      } else {
+      if (!bar) return;
+      if (bar.classList.contains('show')) {
         closeSearch();
+        return;
       }
+      document.body.classList.add('search-open');
+      // Double-rAF so closed styles commit before open transition
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          bar.classList.add('show');
+          const inp = document.getElementById('inpSearch');
+          if (inp) {
+            window.setTimeout(() => {
+              try { inp.focus({ preventScroll: true }); } catch (e) { try { inp.focus(); } catch (_) {} }
+            }, 120);
+          }
+          if (typeof renderSearchResults === 'function') renderSearchResults();
+        });
+      });
     });
 
     function syncSearchClear() {
@@ -5420,12 +6023,19 @@ const ICO = {
     function hideSearchResults() {
       const panel = document.getElementById('searchResults');
       const scrim = document.getElementById('searchScrim');
-      panel.classList.remove('show');
-      panel.hidden = true;
-      panel.innerHTML = '';
+      if (panel) {
+        panel.classList.remove('show');
+        // Clear content after fade so dismiss can animate
+        window.setTimeout(() => {
+          if (!panel.classList.contains('show')) {
+            panel.innerHTML = '';
+            panel.hidden = true;
+          }
+        }, 240);
+      }
       if (scrim) {
         scrim.classList.remove('show');
-        scrim.hidden = true;
+        scrim.hidden = false; // visibility handled by CSS
       }
     }
 
@@ -5768,7 +6378,7 @@ const ICO = {
     function measureHeaderHeight() {
       const header = document.getElementById('appHeader');
       if (header) {
-        const h = Math.max(header.offsetHeight || 0, 81);
+        const h = header.offsetHeight || 81;
         document.documentElement.style.setProperty('--header-h', h + 'px');
       }
       const dots = document.getElementById('sectionDots');
@@ -6269,7 +6879,7 @@ const IDB_NAME = "FieldPunchlistDB";
         return rank(a) - rank(b);
       });
 
-      document.getElementById("stat-open").innerHTML = `<strong>${items.filter(i => i.status === "Not Started").length}</strong> Open`;
+      document.getElementById("stat-open").innerHTML = `<strong>${items.filter(i => i.status === "Not Started").length}</strong> Pending`;
       document.getElementById("stat-progress").innerHTML = `<strong>${items.filter(i => i.status === "In Progress").length}</strong> In Progress`;
       document.getElementById("stat-done").innerHTML = `<strong>${items.filter(i => i.status === "Complete").length}</strong> Done`;
       if (typeof syncStatusChips === "function") syncStatusChips();
@@ -6292,7 +6902,7 @@ const IDB_NAME = "FieldPunchlistDB";
         if (st === "complete" || st === "done" || st === "completed") classes.push("list-complete");
         else if (pri === "high" || pri === "critical") classes.push("priority-high");
         return `
-        <div class="${classes.join(" ")}" data-id="${item.id}" onclick="toggleItem(${item.id}, event)">
+        <div class="${classes.join(" ")}" data-id="${item.id}" onclick="toggleItem('${item.id}', event)">
           <div class="list-item-main">
             <div class="title">${escapeHtml(item.description)}</div>
             <div class="sub">${escapeHtml(item.line)} · ${escapeHtml(item.location)}${item.dueDate ? " · " + item.dueDate : ""}${item.responsible ? " · " + escapeHtml(item.responsible) : ""}</div>
@@ -6312,10 +6922,20 @@ const IDB_NAME = "FieldPunchlistDB";
           </div>
         </div>
       `}).join("");
+      if (typeof bindSwipeToDelete === 'function') {
+        bindSwipeToDelete(list, '.pl-item', (row) => ({
+          id: row.getAttribute('data-id'),
+          kind: 'punchlist-item',
+          title: 'Delete item?',
+          label: 'This punchlist item will be permanently deleted.'
+        }));
+      }
     }
 
     function toggleItem(id, ev) {
-      if (ev && ev.target.closest("button, a, input, select, textarea, img.list-item-photo, .pl-photo-viewer")) return;
+      if (ev && ev.target.closest("button, a, input, select, textarea, img.list-item-photo, .pl-photo-viewer, .swipe-delete-btn")) return;
+      if (typeof window.swipeIgnoreClicksUntil === 'number' && Date.now() < window.swipeIgnoreClicksUntil) return;
+      if (ev && ev.currentTarget && ev.currentTarget.closest && ev.currentTarget.closest('.swipe-host.swipe-open')) return;
       openDetail(id);
     }
 
@@ -6426,7 +7046,11 @@ const IDB_NAME = "FieldPunchlistDB";
     document.getElementById("btn-filter").addEventListener("click", openFilterSheet);
 
     function openDetail(id) {
-      const item = getItems().find(i => i.id === id);
+      // String()-coerced comparison: existing items have numeric ids,
+      // new items (see newId below) have string ids from newEntityId() —
+      // this works correctly against either without needing every id in
+      // storage to be rewritten to match.
+      const item = getItems().find(i => String(i.id) === String(id));
       if (!item) return;
       editingId = id;
       tempPhoto = null;
@@ -6662,22 +7286,30 @@ const IDB_NAME = "FieldPunchlistDB";
         action: document.getElementById("f-action").value.trim(),
         department: document.getElementById("f-department").value,
         responsible: document.getElementById("f-responsible").value.trim(),
-        dueDate: editingId ? ((getItems().find(i => i.id === editingId) || {}).dueDate || "") : "",
+        dueDate: editingId ? ((getItems().find(i => String(i.id) === String(editingId)) || {}).dueDate || "") : "",
         priority: document.getElementById("f-priority").value,
         comments: document.getElementById("f-comments").value.trim(),
         createdAt: (document.getElementById("f-createdAt") && document.getElementById("f-createdAt").value) || nowStamp(),
         status: document.getElementById("f-status").value,
-        photo: tempPhoto !== null ? tempPhoto : (editingId ? (getItems().find(i => i.id === editingId)?.photo || null) : null)
+        photo: tempPhoto !== null ? tempPhoto : (editingId ? (getItems().find(i => String(i.id) === String(editingId))?.photo || null) : null)
       };
       if (!formData.description) { alert("Description is required"); return; }
 
       let items = getItems();
       if (editingId) {
-        const idx = items.findIndex(i => i.id === editingId);
+        const idx = items.findIndex(i => String(i.id) === String(editingId));
         items[idx] = { ...items[idx], ...formData };
         toast("Item updated");
       } else {
-        const newId = items.length ? Math.max(...items.map(i => i.id)) + 1 : 1;
+        // Standardized on newEntityId() (same generator Jobs/Parts
+        // Requests/Time Cards use) instead of Math.max(existing ids)+1 —
+        // a client-computed sequential id collides the moment two
+        // devices add an item offline from the same starting list.
+        // Existing numeric ids are left exactly as they are; every
+        // comparison against item.id elsewhere in this module was
+        // updated to String()-coerce so old (numeric) and new (string)
+        // ids compare correctly against each other.
+        const newId = newEntityId('pli');
         items.push({ id: newId, ...formData });
         toast("Item added");
       }
@@ -7749,7 +8381,8 @@ const IDB_NAME = "FieldPunchlistDB";
     window.tcEntriesForJob = tcEntriesForJob;
     window.tcEntryHours = tcEntryHours;
     window.tcLoad = tcLoad;
-
+    window.tcFormatLongDate = tcFormatLongDate;
+    window.tcOpenEdit = tcOpenEdit;
     function tcUid() {
       return 'tc_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
     }
@@ -7867,7 +8500,8 @@ const IDB_NAME = "FieldPunchlistDB";
       } else d = new Date(v);
       if (!d || isNaN(d.getTime())) return '';
       const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      return months[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+      const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      return days[d.getDay()] + ', ' + months[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
     }
 
     function tcFormatTime(ms) {
@@ -7888,7 +8522,24 @@ const IDB_NAME = "FieldPunchlistDB";
     function tcHoursFromMs(ms) {
       if (ms < 0) ms = 0;
       if (ms > TC_MAX_MS) ms = TC_MAX_MS;
-      return Math.round((ms / 3600000) * 100) / 100;
+      const minutes = Math.round(ms / 60000);
+      return Math.round((minutes / 60) * 100) / 100;
+    }
+    function tcHoursLabel(hours) {
+      const n = Math.max(0, Math.min(24, Number(hours) || 0));
+      const minutes = Math.round(n * 60);
+      const h = Math.floor(minutes / 60);
+      const m = minutes % 60;
+      return h + ' hr ' + String(m).padStart(2, '0') + ' min';
+    }
+    function tcSpanMs(clockIn, clockOut) {
+      const a = Number(clockIn);
+      let b = Number(clockOut);
+      if (!isFinite(a) || !isFinite(b)) return 0;
+      if (b === a) return TC_MAX_MS;
+      if (b < a) b += TC_MAX_MS;
+      if (b - a > TC_MAX_MS) return TC_MAX_MS;
+      return b - a;
     }
     function tcEffectiveOut(entry) {
       if (entry.clockOut) return entry.clockOut;
@@ -8028,7 +8679,7 @@ const IDB_NAME = "FieldPunchlistDB";
         if (meta) meta.textContent = 'Since ' + tcFormatTime(tcState.active.clockIn) + ' · ' + bn;
         if (btnIn) btnIn.disabled = true;
         if (btnOut) btnOut.disabled = false;
-        if (typeRow) typeRow.querySelectorAll('.tc-type-chip').forEach(b => { b.disabled = true; });
+        if (typeRow) typeRow.querySelectorAll('.tc-type-chip').forEach(b => { b.disabled = false; });
         if (jobSel) jobSel.disabled = true;
       } else {
         if (kicker) {
@@ -8046,67 +8697,754 @@ const IDB_NAME = "FieldPunchlistDB";
         if (jobSel) jobSel.disabled = false;
       }
       if (typeRow) {
+        const liveType = (tcState.active && tcState.active.type) || tcState.selectedType;
         typeRow.querySelectorAll('.tc-type-chip').forEach(b => {
-          b.classList.toggle('on', b.getAttribute('data-type') === tcState.selectedType);
+          b.classList.toggle('on', b.getAttribute('data-type') === liveType);
         });
       }
     }
     function tcRenderWeek() {
-      tcRenderRecords();
-    }
-    function tcFormatRecordDate(dateKey) {
-      const d = new Date(String(dateKey || '') + 'T12:00:00');
-      return isNaN(d.getTime()) ? (dateKey || '') : d.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
-    }
-    function tcRenderRecords() {
-      const list = document.getElementById('tcEntryList');
-      if (!list) return;
-      const searchEl = document.getElementById('tcRecordsSearch');
-      const q = String(searchEl ? searchEl.value : '').trim().toLowerCase();
-      let entries = (tcState.entries || []).slice().sort((a,b) => {
-        const da = a.date || tcDateKey(a.clockIn || 0);
-        const db = b.date || tcDateKey(b.clockIn || 0);
-        return db.localeCompare(da) || ((b.clockIn||0) - (a.clockIn||0));
-      });
-      if (q) {
-        entries = entries.filter(en => {
-          const d = en.date || tcDateKey(en.clockIn || 0);
-          const hay = [d, tcFormatRecordDate(d), en.bakeryName || '', en.type || '', en.notes || ''].join(' ').toLowerCase();
-          return hay.includes(q);
-        });
+      tcRenderWeekStrip();
+      if (document.getElementById('screenTimeWeek') && document.getElementById('screenTimeWeek').classList.contains('active')) {
+        tcRenderWeekDetail();
       }
+    }
+    function tcWeekLabelText(offset) {
+      const { start, end } = tcWeekBounds(offset);
+      const opts = { month: 'short', day: 'numeric' };
+      return start.toLocaleDateString(undefined, opts) + ' – ' + new Date(end - 1).toLocaleDateString(undefined, opts);
+    }
+    function tcWeekTotals(offset) {
+      const entries = tcEntriesForWeek(offset);
+      let bakery = 0, travel = 0, shop = 0;
+      entries.forEach(en => {
+        const h = tcEntryHours(en);
+        if (en.type === 'travel') travel += h;
+        else if (en.type === 'shop') shop += h;
+        else bakery += h;
+      });
+      return { bakery, travel, shop, total: bakery + travel + shop, count: entries.length };
+    }
+    function tcWeekCardHTML(offset) {
+      const fmt = n => (Math.round(n * 100) / 100).toFixed(2);
+      const t = tcWeekTotals(offset);
+      const label = tcWeekLabelText(offset);
+      const kicker = offset === 0 ? 'This week' : (offset === -1 ? 'Last week' : (offset === 1 ? 'Next week' : 'Week'));
+      return (
+        '<div class="tc-week-card" data-offset="' + offset + '">' +
+          '<div class="tc-week-kicker">' + kicker + '</div>' +
+          '<div class="tc-week-label">' + label + '</div>' +
+          '<div class="tc-week-totals">' +
+            '<span>Bakery<strong>' + fmt(t.bakery) + '</strong></span>' +
+            '<span>Travel<strong>' + fmt(t.travel) + '</strong></span>' +
+            '<span>Shop<strong>' + fmt(t.shop) + '</strong></span>' +
+            '<span>Total<strong>' + fmt(t.total) + '</strong></span>' +
+          '</div>' +
+          '<div class="tc-week-hint">' + (t.count ? (t.count + ' entr' + (t.count === 1 ? 'y' : 'ies')) : 'No entries') + '</div>' +
+        '</div>'
+      );
+    }
+
+    function tcRenderWeekStrip() {
+      const strip = document.getElementById('tcWeekStrip');
+      if (!strip) return;
+      const off = tcState.weekOffset || 0;
+
+      strip.innerHTML =
+        '<div class="tc-week-viewport" id="tcWeekViewport">' +
+          '<div class="tc-week-track" id="tcWeekTrack">' +
+            tcWeekCardHTML(off - 1) +
+            tcWeekCardHTML(off) +
+            tcWeekCardHTML(off + 1) +
+          '</div>' +
+        '</div>';
+
+      const viewport = document.getElementById('tcWeekViewport');
+      const track = document.getElementById('tcWeekTrack');
+      if (!viewport || !track) return;
+
+      // Tear down prior observer so re-renders do not stack listeners
+      if (strip._tcWeekRO) {
+        try { strip._tcWeekRO.disconnect(); } catch (_) {}
+        strip._tcWeekRO = null;
+      }
+
+      const cards = Array.from(track.querySelectorAll('.tc-week-card'));
+      const GAP = 12; // padding visible between cards while swiping
+      const measure = () => Math.max(1, Math.round(viewport.getBoundingClientRect().width));
+      const layout = () => {
+        const w = measure();
+        cards.forEach(c => {
+          c.style.flex = '0 0 ' + w + 'px';
+          c.style.width = w + 'px';
+          c.style.minWidth = w + 'px';
+          c.style.maxWidth = w + 'px';
+        });
+        track.style.gap = GAP + 'px';
+        track.style.width = (w * cards.length + GAP * Math.max(0, cards.length - 1)) + 'px';
+        return w;
+      };
+      let pageW = layout();
+      // Track holds [prev, current, next]; center on current (account for gap)
+      const stepOf = (w) => w + GAP;
+      let baseX = -stepOf(pageW);
+      let dragX = 0;
+      let settling = false;
+      let moved = false;
+      let axis = null; // null | 'h' | 'v'
+      let startX = 0, startY = 0, lastX = 0, lastT = 0, velX = 0;
+      let pointerId = null;
+
+      const setX = (x, withTransition) => {
+        if (withTransition) {
+          track.style.transition = 'transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)';
+        } else {
+          track.style.transition = 'none';
+        }
+        // Force compositor layer; avoid subpixel jitter
+        track.style.transform = 'translate3d(' + Math.round(x * 100) / 100 + 'px,0,0)';
+      };
+
+      setX(baseX, false);
+
+      const openCurrent = () => {
+        const displayed = parseInt(track.querySelectorAll('.tc-week-card')[1]?.getAttribute('data-offset') || String(off), 10);
+        tcOpenWeek(Number.isFinite(displayed) ? displayed : (tcState.weekOffset || 0));
+      };
+
+      const finishSettle = (dir) => {
+        // dir: -1 next week (swiped left), +1 prev week (swiped right), 0 snap back
+        if (dir !== 0) {
+          tcState.weekOffset = (tcState.weekOffset || 0) - dir;
+        }
+        // Re-render centered on the new week (no residual transform)
+        tcRenderWeekStrip();
+      };
+
+      const settle = (dir) => {
+        settling = true;
+        pageW = layout();
+        baseX = -stepOf(pageW);
+        const target = baseX + dir * stepOf(pageW);
+        setX(target, true);
+        const onEnd = (e) => {
+          if (e && e.propertyName && e.propertyName !== 'transform') return;
+          track.removeEventListener('transitionend', onEnd);
+          settling = false;
+          finishSettle(dir);
+        };
+        track.addEventListener('transitionend', onEnd);
+        // Fallback if transitionend is skipped
+        window.setTimeout(() => {
+          if (!settling) return;
+          track.removeEventListener('transitionend', onEnd);
+          settling = false;
+          finishSettle(dir);
+        }, 400);
+      };
+
+      const onPointerDown = (e) => {
+        if (settling) return;
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        pointerId = e.pointerId;
+        try { viewport.setPointerCapture(pointerId); } catch (_) {}
+        pageW = measure();
+        baseX = -stepOf(pageW);
+        dragX = 0;
+        moved = false;
+        axis = null;
+        startX = e.clientX;
+        startY = e.clientY;
+        lastX = e.clientX;
+        lastT = performance.now();
+        velX = 0;
+        track.style.transition = 'none';
+      };
+
+      const onPointerMove = (e) => {
+        if (pointerId == null || e.pointerId !== pointerId || settling) return;
+        const x = e.clientX;
+        const y = e.clientY;
+        const dx = x - startX;
+        const dy = y - startY;
+        if (!axis) {
+          if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+          axis = Math.abs(dx) > Math.abs(dy) * 1.15 ? 'h' : 'v';
+          if (axis === 'v') {
+            // Let the page scroll; abandon horizontal gesture
+            try { viewport.releasePointerCapture(pointerId); } catch (_) {}
+            pointerId = null;
+            return;
+          }
+        }
+        if (axis !== 'h') return;
+        e.preventDefault();
+        moved = true;
+        const now = performance.now();
+        const dt = Math.max(1, now - lastT);
+        velX = (x - lastX) / dt; // px/ms
+        lastX = x;
+        lastT = now;
+        dragX = dx;
+        // Slight edge resistance when over-dragging past a full page
+        let resisted = dragX;
+        const limit = stepOf(pageW) * 1.05;
+        if (resisted > limit) resisted = limit + (resisted - limit) * 0.25;
+        if (resisted < -limit) resisted = -limit + (resisted + limit) * 0.25;
+        setX(baseX + resisted, false);
+      };
+
+      const onPointerUp = (e) => {
+        if (pointerId == null || (e && e.pointerId !== pointerId)) return;
+        try { viewport.releasePointerCapture(pointerId); } catch (_) {}
+        pointerId = null;
+        if (settling) return;
+        if (axis !== 'h' || !moved) {
+          // Tap → open week
+          if (!moved && axis !== 'v') openCurrent();
+          axis = null;
+          dragX = 0;
+          setX(baseX, false);
+          return;
+        }
+        const dx = dragX;
+        const threshold = stepOf(pageW) * 0.22;
+        const flick = Math.abs(velX) > 0.45; // ~450 px/s
+        let dir = 0;
+        if (dx <= -threshold || (flick && velX < -0.25)) dir = -1; // next
+        else if (dx >= threshold || (flick && velX > 0.25)) dir = 1;  // prev
+        axis = null;
+        dragX = 0;
+        settle(dir);
+      };
+
+      viewport.addEventListener('pointerdown', onPointerDown);
+      viewport.addEventListener('pointermove', onPointerMove, { passive: false });
+      viewport.addEventListener('pointerup', onPointerUp);
+      viewport.addEventListener('pointercancel', onPointerUp);
+
+      strip._tcWeekRO = new ResizeObserver(() => {
+        if (settling || pointerId != null) return;
+        pageW = layout();
+        baseX = -stepOf(pageW);
+        setX(baseX, false);
+      });
+      strip._tcWeekRO.observe(viewport);
+    }
+function tcRenderEntryList(listEl, offset) {
+      if (!listEl) return;
+      const entries = tcEntriesForWeek(offset);
       if (!entries.length) {
-        list.innerHTML = '<div style="padding:28px;text-align:center;color:var(--muted);">' + (q ? 'No matching time records' : 'No time records yet') + '</div>';
+        listEl.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);">No time entries this week</div>';
         return;
       }
-      let lastDate = '';
-      let html = '';
-      entries.forEach(en => {
-        const d = en.date || tcDateKey(en.clockIn || 0);
-        if (d !== lastDate) {
-          html += '<div class="tc-record-date">' + jobEsc(tcFormatRecordDate(d)) + '</div>';
-          lastDate = d;
-        }
+      listEl.innerHTML = entries.map(en => {
         const h = tcEntryHours(en);
         const open = tcState.active && tcState.active.id === en.id && !en.clockOut;
+        const capped = tcWasAutoCapped(en);
         const typeLabel = (en.type || 'bakery').charAt(0).toUpperCase() + (en.type || 'bakery').slice(1);
-        const job = en.bakeryName || 'No job';
-        const time = en.clockIn ? new Date(en.clockIn).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}) : '';
-        const out = en.clockOut ? new Date(en.clockOut).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}) : 'Running';
-        html += '<div class="tc-entry' + (open ? ' open-shift' : '') + '" data-id="' + en.id + '">' +
-          '<div class="tc-entry-main"><div class="tc-entry-title">' + jobEsc(job) + '</div>' +
-          '<div class="tc-entry-sub">' + jobEsc(typeLabel) + (time ? ' · ' + jobEsc(time + ' – ' + out) : '') + '</div></div>' +
+        const dateStr = tcFormatLongDate(en.date || en.clockIn);
+        return '<div class="tc-entry' + (open ? ' open-shift' : '') + '" data-id="' + en.id + '">' +
+          '<div class="tc-entry-main"><div class="tc-entry-title">' + String(dateStr).replace(/</g,'&lt;') + '</div>' +
+          '<div class="tc-entry-sub">' + typeLabel + '</div></div>' +
           '<div class="tc-entry-hours">' + h.toFixed(2) + '</div></div>';
+      }).join('');
+      listEl.querySelectorAll('.tc-entry').forEach(el => {
+        el.addEventListener('click', () => tcOpenEdit(el.getAttribute('data-id')));
       });
-      list.innerHTML = html;
-      list.querySelectorAll('.tc-entry').forEach(el => el.addEventListener('click', () => tcOpenEdit(el.getAttribute('data-id'))));
+      if (typeof bindSwipeToDelete === 'function') {
+        bindSwipeToDelete(listEl, '.tc-entry', (row) => ({
+          id: row.getAttribute('data-id'),
+          kind: 'timecard',
+          title: 'Delete time entry?',
+          label: 'This time entry will be permanently deleted.'
+        }));
+      }
     }
-    function tcOpenRecords() {
-      tcLoad();
+    function tcRenderWeekDetail() {
+      const title = document.getElementById('tcWeekDetailTitle');
+      if (title) title.textContent = tcWeekLabelText(tcState.weekOffset);
+      const sel = document.getElementById('tcWeekSelect');
+      if (sel) {
+        const cur = String(tcState.weekOffset || 0);
+        let opts = '';
+        for (let off = -8; off <= 4; off++) {
+          const label = tcWeekLabelText(off);
+          const kicker = off === 0 ? 'This week' : (off === -1 ? 'Last week' : (off === 1 ? 'Next week' : 'Week'));
+          opts += '<option value="' + off + '"' + (String(off) === cur ? ' selected' : '') + '>' +
+            kicker + ' · ' + label + '</option>';
+        }
+        sel.innerHTML = opts;
+        sel.value = cur;
+      }
+      const t = tcWeekTotals(tcState.weekOffset);
+      const fmt = n => (Math.round(n * 100) / 100).toFixed(2);
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = fmt(v); };
+      set('tcDetBakery', t.bakery);
+      set('tcDetTravel', t.travel);
+      set('tcDetShop', t.shop);
+      set('tcDetAll', t.total);
+      tcRenderEntryList(document.getElementById('tcEntryList'), tcState.weekOffset);
+    }
+
+    function tcCloseWeekPick() {
+      const sheet = document.getElementById('tcWeekPickSheet');
+      const scrim = document.getElementById('tcWeekPickScrim');
+      if (sheet) {
+        sheet.classList.remove('show');
+        sheet.hidden = true;
+        sheet.setAttribute('hidden', '');
+      }
+      if (scrim) {
+        scrim.classList.remove('show');
+        scrim.hidden = true;
+        scrim.setAttribute('hidden', '');
+      }
+    }
+    function tcOpenWeekPick() {
+      const sheet = document.getElementById('tcWeekPickSheet');
+      const list = document.getElementById('tcWeekPickList');
+      const scrim = document.getElementById('tcWeekPickScrim');
+      if (!sheet || !list) return;
+      let html = '';
+      for (let off = -8; off <= 4; off++) {
+        const label = tcWeekLabelText(off);
+        const kicker = off === 0 ? 'This week' : (off === -1 ? 'Last week' : (off === 1 ? 'Next week' : 'Week'));
+        const on = off === (tcState.weekOffset || 0) ? ' on' : '';
+        html += '<button type="button" class="tc-week-pick-item' + on + '" data-offset="' + off + '">' +
+          kicker + '<span class="sub">' + label + '</span></button>';
+      }
+      list.innerHTML = html;
+      list.querySelectorAll('.tc-week-pick-item').forEach(btn => {
+        btn.addEventListener('click', () => {
+          tcState.weekOffset = parseInt(btn.getAttribute('data-offset'), 10) || 0;
+          tcCloseWeekPick();
+          tcRenderWeekDetail();
+        });
+      });
+      if (scrim) {
+        scrim.hidden = false;
+        scrim.removeAttribute('hidden');
+        scrim.classList.add('show');
+      }
+      sheet.hidden = false;
+      sheet.removeAttribute('hidden');
+      sheet.classList.add('show');
+    }
+
+    function tcOpenWeek(offset) {
+      tcState.weekOffset = offset;
       showScreen('screenTimeWeek');
-      document.body.classList.add('on-time');
-      document.body.classList.remove('on-home','on-time-edit','on-time-period');
-      tcRenderRecords();
+      document.body.classList.add('on-time-week');
+      document.body.classList.remove('on-time', 'on-home');
+      tcRenderWeekDetail();
+    }
+
+    function tcRefresh() {
+      tcPopulateJobSelects();
+      tcRenderStatus();
+      tcRenderWeek();
+    }
+    function tcStartTick() {
+      if (tcState.tickTimer) clearInterval(tcState.tickTimer);
+      tcState.tickTimer = setInterval(() => {
+        const sc = document.getElementById('screenTime');
+        if (sc && sc.classList.contains('active')) {
+          tcRenderStatus();
+          if (tcState.active) tcRenderWeek();
+        }
+      }, tcState.active ? 1000 : 15000);
+    }
+    function tcClockIn() {
+      tcEnsureActiveClosedIfNeeded();
+      if (tcState.active) { toast('Already clocked in'); return; }
+      const jobSel = document.getElementById('tcJobSelect');
+      let jobId = jobSel ? jobSel.value : '';
+      if (!jobId) {
+        const auto = tcFindJobForToday();
+        if (auto) {
+          jobId = auto.id;
+          if (jobSel) jobSel.value = jobId;
+        }
+      }
+      const bakeryName = tcBakeryNameForJob(jobId);
+      const id = tcUid();
+      const clockIn = Date.now();
+      const entry = {
+        id, clockIn, clockOut: null,
+        type: tcState.selectedType || 'bakery',
+        jobId: jobId || '',
+        bakeryName: bakeryName || '',
+        date: tcDateKey(clockIn),
+        notes: '',
+        manualHours: null,
+        autoCapped: false
+      };
+      tcState.entries.push(entry);
+      tcState.active = { id, clockIn, type: entry.type, jobId: entry.jobId, bakeryName: entry.bakeryName };
+      tcSave();
+      tcRefresh();
+      tcStartTick();
+      toast('Clocked in');
+    }
+    function tcSwitchType(nextType) {
+      nextType = String(nextType || 'bakery').toLowerCase();
+      if (nextType !== 'travel' && nextType !== 'shop' && nextType !== 'bakery') nextType = 'bakery';
+      const current = (tcState.active && tcState.active.type) || tcState.selectedType || 'bakery';
+      if (!tcState.active) {
+        tcState.selectedType = nextType;
+        tcRenderStatus();
+        return;
+      }
+      if (current === nextType) {
+        tcState.selectedType = nextType;
+        tcRenderStatus();
+        return;
+      }
+      tcEnsureActiveClosedIfNeeded();
+      if (!tcState.active) {
+        tcState.selectedType = nextType;
+        tcClockIn();
+        return;
+      }
+      const now = Date.now();
+      const prev = tcState.entries.find(e => e.id === tcState.active.id);
+      if (prev) {
+        prev.clockOut = Math.min(now, prev.clockIn + TC_MAX_MS);
+        if (prev.clockOut >= prev.clockIn + TC_MAX_MS - 1000) prev.autoCapped = true;
+        if (prev.clockOut <= prev.clockIn) prev.clockOut = prev.clockIn + 1000;
+      }
+      const jobId = (prev && prev.jobId) || tcState.active.jobId || '';
+      const bakeryName = (prev && prev.bakeryName) || tcState.active.bakeryName || tcBakeryNameForJob(jobId);
+      const id = tcUid();
+      const entry = {
+        id, clockIn: now, clockOut: null,
+        type: nextType,
+        jobId: jobId || '',
+        bakeryName: bakeryName || '',
+        date: tcDateKey(now),
+        notes: '',
+        manualHours: null,
+        autoCapped: false
+      };
+      tcState.entries.push(entry);
+      tcState.selectedType = nextType;
+      tcState.active = { id, clockIn: now, type: nextType, jobId: entry.jobId, bakeryName: entry.bakeryName };
+      tcSave();
+      tcRefresh();
+      tcStartTick();
+      const label = nextType.charAt(0).toUpperCase() + nextType.slice(1);
+      toast('Switched to ' + label);
+    }
+    function tcClockOut() {
+      if (!tcState.active) { toast('Not clocked in'); return; }
+      const entry = tcState.entries.find(e => e.id === tcState.active.id);
+      const out = Math.min(Date.now(), tcState.active.clockIn + TC_MAX_MS);
+      if (entry) {
+        entry.clockOut = out;
+        if (out >= tcState.active.clockIn + TC_MAX_MS - 1000) entry.autoCapped = true;
+      }
+      tcState.active = null;
+      tcSave();
+      tcRefresh();
+      tcStartTick();
+      toast('Clocked out');
+    }
+
+    let tcHoursManualOverride = false;
+    function tcRecalcHoursFromTimes() {
+      if (tcHoursManualOverride) return;
+      const cin = document.getElementById('tcEditClockIn');
+      const cout = document.getElementById('tcEditClockOut');
+      const hoursEl = document.getElementById('tcEditHours');
+      const hint = document.getElementById('tcHoursHint');
+      if (!cin || !cout || !hoursEl) return;
+      if (!cin.value || !cout.value) {
+        if (hint) hint.textContent = 'Enter clock in and out to calculate hours, or type hours directly';
+        return;
+      }
+      const dateEl = document.getElementById('tcEditDate');
+      const baseDate = (dateEl && dateEl.value) ? dateEl.value : tcDateKey(Date.now());
+      const parseTime = (value) => {
+        const m = String(value || '').match(/^(\d{2}):(\d{2})$/);
+        if (!m) return NaN;
+        return new Date(baseDate + 'T' + m[1] + ':' + m[2] + ':00').getTime();
+      };
+      const sameTime = String(cin.value || '').slice(0,5) === String(cout.value || '').slice(0,5) && cin.value;
+      const a = parseTime(cin.value);
+      let b = parseTime(cout.value);
+      if (isNaN(a) || isNaN(b)) {
+        if (hint) hint.textContent = 'Enter clock in and out to calculate hours, or type hours directly';
+        return;
+      }
+      const ms = sameTime ? TC_MAX_MS : tcSpanMs(a, b);
+      const h = sameTime ? 24 : tcHoursFromMs(ms);
+      hoursEl.value = h;
+      if (hint) {
+        hint.textContent = h >= 24
+          ? 'Capped at 24 hours — you can still override'
+          : 'Calculated from clock in / out — you can override';
+      }
+    }
+
+    function tcOpenEdit(id) {
+      const entry = tcState.entries.find(e => e.id === id);
+      if (!entry) return;
+      tcState.editId = id;
+      tcHoursManualOverride = false;
+      try {
+        const del = document.getElementById('btnTcEditDelete');
+        if (del && del.dataset.delBound !== '1') {
+          del.dataset.delBound = '1';
+          del.addEventListener('click', (e) => { e.preventDefault(); tcDeleteEdit(e); });
+        }
+      } catch (e) {}
+      document.getElementById('tcEditTitle').textContent = 'Edit hours';
+      const editScreen = document.getElementById('screenTimeEdit');
+      if (editScreen) editScreen.classList.remove('add-mode');
+      document.getElementById('tcEditDate').value = entry.date || tcDateKey(entry.clockIn || Date.now());
+      document.getElementById('tcEditType').value = entry.type || 'bakery';
+      document.getElementById('tcEditJob').innerHTML = tcJobOptionsHtml(entry.jobId || '');
+      document.getElementById('tcEditHours').value = tcEntryHours(entry);
+      const toTime = (ms) => {
+        if (!ms) return '';
+        const d = new Date(ms);
+        return tcPad(d.getHours()) + ':' + tcPad(d.getMinutes());
+      };
+      document.getElementById('tcEditClockIn').value = toTime(entry.clockIn);
+      document.getElementById('tcEditClockOut').value = toTime(entry.clockOut);
+      document.getElementById('tcEditNotes').value = entry.notes || '';
+      showScreen('screenTimeEdit');
+      document.body.classList.add('on-time-edit');
+      document.body.classList.remove('on-time', 'on-time-week');
+    }
+    function tcOpenManual() {
+      tcState.editId = null;
+      tcHoursManualOverride = false;
+      document.getElementById('tcEditTitle').textContent = 'Add hours';
+      const editScreen = document.getElementById('screenTimeEdit');
+      if (editScreen) editScreen.classList.add('add-mode');
+      document.getElementById('tcEditDate').value = tcDateKey(new Date());
+      document.getElementById('tcEditType').value = tcState.selectedType || 'bakery';
+      const auto = tcFindJobForToday();
+      document.getElementById('tcEditJob').innerHTML = tcJobOptionsHtml(auto ? auto.id : '');
+      document.getElementById('tcEditHours').value = '8';
+      // Default workday times for new entries. These are time-only controls;
+      // the Date field remains the single calendar-date source of truth.
+      document.getElementById('tcEditClockIn').value = '08:00';
+      document.getElementById('tcEditClockOut').value = '18:00';
+      document.getElementById('tcEditHours').value = '10';
+      document.getElementById('tcEditNotes').value = '';
+      showScreen('screenTimeEdit');
+      document.body.classList.add('on-time-edit');
+      document.body.classList.remove('on-time', 'on-time-week');
+    }
+    function tcSaveEdit() {
+      const date = document.getElementById('tcEditDate').value;
+      const type = document.getElementById('tcEditType').value || 'bakery';
+      const jobId = document.getElementById('tcEditJob').value || '';
+      const bakeryName = jobId ? tcBakeryNameForJob(jobId) : '';
+      const hoursVal = parseFloat(document.getElementById('tcEditHours').value);
+      const notes = document.getElementById('tcEditNotes').value || '';
+      const cinStr = document.getElementById('tcEditClockIn').value;
+      const coutStr = document.getElementById('tcEditClockOut').value;
+      let manualHours = (!isNaN(hoursVal)) ? Math.max(0, Math.min(24, hoursVal)) : null;
+      if (cinStr && coutStr && String(cinStr).slice(0,5) === String(coutStr).slice(0,5) && !tcHoursManualOverride) {
+        manualHours = 24;
+      }
+      let clockIn = null;
+      let clockOut = null;
+      // The entry Date is the single source of truth for the calendar date.
+      // Clock in/out fields contain time only, so changing a time can never
+      // silently change the entry's date.
+      const baseDate = date || tcDateKey(Date.now());
+      const timeOnDate = (timeStr, fallbackHour) => {
+        if (!timeStr) return null;
+        const m = String(timeStr).match(/^(\d{2}):(\d{2})$/);
+        if (!m) return null;
+        const d = new Date(baseDate + 'T' + m[1] + ':' + m[2] + ':00');
+        return isNaN(d.getTime()) ? null : d.getTime();
+      };
+      if (cinStr) clockIn = timeOnDate(cinStr, 8);
+      if (coutStr) clockOut = timeOnDate(coutStr, 0);
+      // If clock-out is earlier than clock-in, treat it as the following day.
+      // This keeps overnight entries possible while still having one displayed Date.
+      if (clockIn && clockOut && clockOut <= clockIn) clockOut += 24 * 3600000;
+      if (cinStr && coutStr && String(cinStr).slice(0,5) === String(coutStr).slice(0,5)) {
+        clockOut = clockIn + TC_MAX_MS;
+        if (manualHours == null || !tcHoursManualOverride) {
+          // 8:00 to 8:00 (same displayed time) is a 24-hour shift
+        }
+      }
+      // Manual hours only (no clock times): store hours without fabricating clock range
+      if (manualHours != null && tcHoursManualOverride && !cinStr && !coutStr) {
+        clockIn = date ? new Date(date + 'T12:00:00').getTime() : Date.now();
+        clockOut = null;
+      } else {
+        if (!clockIn) clockIn = date ? new Date(date + 'T08:00:00').getTime() : Date.now();
+        if (clockOut && clockOut - clockIn > TC_MAX_MS) clockOut = clockIn + TC_MAX_MS;
+        if (manualHours != null && !coutStr && !tcHoursManualOverride) {
+          clockOut = clockIn + Math.round(manualHours * 3600000);
+          if (clockOut - clockIn > TC_MAX_MS) clockOut = clockIn + TC_MAX_MS;
+        }
+      }
+      if (tcState.editId) {
+        const entry = tcState.entries.find(e => e.id === tcState.editId);
+        if (entry) {
+          entry.date = date || tcDateKey(clockIn);
+          entry.type = type;
+          entry.jobId = jobId;
+          entry.bakeryName = bakeryName;
+          entry.notes = notes;
+          entry.clockIn = clockIn;
+          entry.clockOut = clockOut;
+          entry.manualHours = manualHours;
+          if (tcState.active && tcState.active.id === entry.id) {
+            if (clockOut) tcState.active = null;
+            else tcState.active = { id: entry.id, clockIn: entry.clockIn, type: entry.type, jobId: entry.jobId, bakeryName: entry.bakeryName };
+          }
+        }
+      } else {
+        const id = tcUid();
+        tcState.entries.push({
+          id, date: date || tcDateKey(clockIn), type, jobId, bakeryName, notes,
+          clockIn, clockOut: clockOut || (clockIn + (manualHours != null ? Math.round(manualHours * 3600000) : 0)),
+          manualHours, autoCapped: false
+        });
+      }
+      tcSave();
+      showScreen('screenTimeWeek');
+      document.body.classList.add('on-time-week');
+      document.body.classList.remove('on-time-edit');
+      tcRenderWeekDetail();
+      toast('Saved');
+      try { if (typeof refreshJobDetail === 'function' && detailJobId) refreshJobDetail(); } catch (e) {}
+    }
+    function tcDeleteEdit(ev) {
+      if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+      const id = tcState.editId || (tcState.active && tcState.active.id) || '';
+      if (!id) {
+        toast('No time entry to delete');
+        return;
+      }
+      if (typeof showDeleteConfirm === 'function') {
+        showDeleteConfirm(id, 'timecard', 'Delete time entry?', 'This time entry will be permanently deleted.');
+      } else {
+        pendingDeleteId = id;
+        pendingDeleteKind = 'timecard';
+        const modal = document.getElementById('deleteModal');
+        if (modal) {
+          document.getElementById('deleteModalTitle').textContent = 'Delete time entry?';
+          document.getElementById('deleteModalLabel').textContent = 'This time entry will be permanently deleted.';
+          modal.classList.remove('hidden');
+          modal.classList.add('show');
+          modal.style.display = 'flex';
+          modal.style.zIndex = '30000';
+        }
+      }
+    }
+    function performDeleteTimecard(id) {
+      if (!id) { closeDeleteModal(); return; }
+      const sid = String(id);
+      tcState.entries = (tcState.entries || []).filter(e => String(e.id) !== sid);
+      if (tcState.active && tcState.active.id === id) tcState.active = null;
+      if (tcState.editId === id) tcState.editId = null;
+      tcSave();
+      closeDeleteModal();
+      showScreen('screenTimeWeek');
+      document.body.classList.add('on-time-week');
+      document.body.classList.remove('on-time-edit');
+      tcRenderWeekDetail();
+      toast('Deleted');
+    }
+    window.performDeleteTimecard = performDeleteTimecard;
+    window.tcDeleteEdit = tcDeleteEdit;
+
+    function tcCloseNameSheet() {
+      const sheet = document.getElementById('tcNameSheet');
+      if (!sheet) return;
+      sheet.classList.remove('show');
+      sheet.hidden = true;
+      sheet.setAttribute('hidden', '');
+    }
+    function tcOpenNameSheet(defaultName) {
+      return new Promise((resolve) => {
+        const sheet = document.getElementById('tcNameSheet');
+        const input = document.getElementById('tcExportNameInput');
+        const ok = document.getElementById('tcNameSheetOk');
+        const cancel = document.getElementById('tcNameSheetCancel');
+        if (!sheet || !input || !ok) { resolve(defaultName || ''); return; }
+        input.value = defaultName || '';
+        sheet.hidden = false;
+        sheet.removeAttribute('hidden');
+        sheet.classList.add('show');
+        setTimeout(() => { try { input.focus(); input.select(); } catch (e) {} }, 80);
+        const cleanup = () => {
+          ok.removeEventListener('click', onOk);
+          cancel && cancel.removeEventListener('click', onCancel);
+          tcCloseNameSheet();
+        };
+        const onOk = () => {
+          const v = (input.value || '').trim();
+          cleanup();
+          if (v) { try { lsWrite('lx8_tc_name', v); } catch (e) {} }
+          resolve(v);
+        };
+        const onCancel = () => { cleanup(); resolve(null); };
+        ok.addEventListener('click', onOk);
+        if (cancel) cancel.addEventListener('click', onCancel);
+      });
+    }
+
+    let tcExportSelection = { mode: 'weeks', weeks: new Set(), days: new Set() };
+
+    function tcExportDateLabel(dateKey) {
+      if (!dateKey) return '';
+      const parts = String(dateKey).split('-').map(Number);
+      if (parts.length !== 3 || parts.some(isNaN)) return String(dateKey);
+      const d = new Date(parts[0], parts[1] - 1, parts[2]);
+      return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    }
+
+    function tcExportWeekDateKey(offset) {
+      const b = tcWeekBounds(offset).start;
+      return tcDateKey(b);
+    }
+
+    function tcExportAvailableWeekOffsets() {
+      const offsets = new Set();
+      // Keep the picker useful even when a technician has not entered hours yet.
+      for (let i = -12; i <= 4; i++) offsets.add(i);
+      (tcState.entries || []).forEach(en => {
+        const key = en.date || tcDateKey(en.clockIn);
+        if (!key) return;
+        const d = new Date(key + 'T12:00:00');
+        if (isNaN(d.getTime())) return;
+        const nowStart = tcWeekBounds(0).start.getTime();
+        const weekStart = (() => {
+          const day = d.getDay();
+          const mo = day === 0 ? -6 : 1 - day;
+          const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() + mo);
+          x.setHours(0,0,0,0); return x;
+        })().getTime();
+        offsets.add(Math.round((weekStart - nowStart) / (7 * 86400000)));
+      });
+      return Array.from(offsets).filter(n => n >= -104 && n <= 104).sort((a,b) => b-a);
+    }
+
+    function tcExportEntriesForSelectedDays(days) {
+      const set = days instanceof Set ? days : new Set(days || []);
+      return (tcState.entries || []).filter(en => {
+        const d = en.date || tcDateKey(en.clockIn);
+        return d && set.has(d);
+      }).sort((a,b) => (a.clockIn || 0) - (b.clockIn || 0));
+    }
+
+    function tcExportEntriesForSelectedWeeks(weeks) {
+      const set = weeks instanceof Set ? weeks : new Set(weeks || []);
+      const all = [];
+      set.forEach(off => all.push(...tcEntriesForWeek(Number(off))));
+      return all.sort((a,b) => (a.clockIn || 0) - (b.clockIn || 0));
     }
 
     function tcExportGroupByWeek(entries) {
@@ -8219,7 +9557,6 @@ const IDB_NAME = "FieldPunchlistDB";
       try { for (const ref of ['E32','F32','E33','F33','E34','F34','E35','F35']) ws.getCell(ref).border = box; } catch (e) {}
     }
 
-
     function tcCloseExportSheet() {
       const sheet = document.getElementById('tcExportSheet'), scrim = document.getElementById('tcExportScrim');
       if (sheet) { sheet.classList.remove('show'); sheet.hidden = true; sheet.setAttribute('hidden',''); }
@@ -8279,18 +9616,27 @@ const IDB_NAME = "FieldPunchlistDB";
       tcExportSummary();
     }
 
-    function tcOpenExportSheet(initialWeeks) {
+    function tcOpenExportSheet() {
       tcLoad();
       const current = tcState.weekOffset || 0;
-      const seed = Array.isArray(initialWeeks) && initialWeeks.length ? initialWeeks.map(Number) : [current];
-      tcExportSelection = { mode: 'weeks', weeks: new Set(seed), days: new Set() };
+      tcExportSelection = { mode: 'weeks', weeks: new Set([current]), days: new Set() };
       const sheet = document.getElementById('tcExportSheet'), scrim = document.getElementById('tcExportScrim');
       if (!sheet || !scrim) return;
       sheet.hidden = false; sheet.removeAttribute('hidden');
       scrim.hidden = false; scrim.removeAttribute('hidden');
       const seg = document.getElementById('tcExportSeg');
-      if (seg) seg.setAttribute('data-mode', tcExportSelection.mode || 'weeks');
-      requestAnimationFrame(() => { sheet.classList.add('show'); scrim.classList.add('show'); });
+      if (seg) {
+        seg.setAttribute('data-mode', tcExportSelection.mode || 'weeks');
+        seg.classList.remove('seg-land');
+      }
+      requestAnimationFrame(() => {
+        sheet.classList.add('show');
+        scrim.classList.add('show');
+        if (seg) {
+          void seg.offsetWidth;
+          requestAnimationFrame(() => seg.classList.add('seg-land'));
+        }
+      });
       tcRenderExportList();
       setExportButtonsReady(excelLibsReady());
       warmExcelLibs();
@@ -8380,8 +9726,8 @@ const IDB_NAME = "FieldPunchlistDB";
       on('tcExportClose', tcCloseExportSheet);
       on('tcExportCancel', tcCloseExportSheet);
       on('tcExportScrim', tcCloseExportSheet);
-      on('tcExportTabWeeks', () => { tcExportSelection.mode = 'weeks'; document.getElementById('tcExportTabWeeks').classList.add('on'); document.getElementById('tcExportTabDays').classList.remove('on'); document.getElementById('tcExportTabWeeks').setAttribute('aria-selected','true'); document.getElementById('tcExportTabDays').setAttribute('aria-selected','false'); const seg = document.getElementById('tcExportSeg'); if (seg) seg.setAttribute('data-mode','weeks'); tcRenderExportList(); });
-      on('tcExportTabDays', () => { tcExportSelection.mode = 'days'; document.getElementById('tcExportTabDays').classList.add('on'); document.getElementById('tcExportTabWeeks').classList.remove('on'); document.getElementById('tcExportTabDays').setAttribute('aria-selected','true'); document.getElementById('tcExportTabWeeks').setAttribute('aria-selected','false'); const seg = document.getElementById('tcExportSeg'); if (seg) seg.setAttribute('data-mode','days'); tcRenderExportList(); });
+      on('tcExportTabWeeks', () => { tcExportSelection.mode = 'weeks'; document.getElementById('tcExportTabWeeks').classList.add('on'); document.getElementById('tcExportTabDays').classList.remove('on'); document.getElementById('tcExportTabWeeks').setAttribute('aria-selected','true'); document.getElementById('tcExportTabDays').setAttribute('aria-selected','false'); const seg = document.getElementById('tcExportSeg'); if (seg) { seg.classList.remove('seg-land'); seg.setAttribute('data-mode','weeks'); } tcRenderExportList(); });
+      on('tcExportTabDays', () => { tcExportSelection.mode = 'days'; document.getElementById('tcExportTabDays').classList.add('on'); document.getElementById('tcExportTabWeeks').classList.remove('on'); document.getElementById('tcExportTabDays').setAttribute('aria-selected','true'); document.getElementById('tcExportTabWeeks').setAttribute('aria-selected','false'); const seg = document.getElementById('tcExportSeg'); if (seg) { seg.classList.remove('seg-land'); seg.setAttribute('data-mode','days'); } tcRenderExportList(); });
       on('tcExportSelectAll', () => {
         if (tcExportSelection.mode === 'weeks') tcExportAvailableWeekOffsets().forEach(o => tcExportSelection.weeks.add(o));
         else Array.from(new Set((tcState.entries || []).map(e => e.date || tcDateKey(e.clockIn)).filter(Boolean))).forEach(d => tcExportSelection.days.add(d));
@@ -8425,15 +9771,24 @@ const IDB_NAME = "FieldPunchlistDB";
       once('btnTcClockOut', tcClockOut);
       
       once('btnTcExport', tcOpenExportSheet);
-      once('btnTcRecordsExport', tcOpenExportSheet);
-      once('btnTcRecords', tcOpenRecords);
       once('btnTcAddManual', tcOpenManual);
-      once('btnTcAddManualRecords', tcOpenManual);
+      once('btnTcAddManualWeek', tcOpenManual);
+      once('btnTcWeekExport', tcOpenExportSheet);
       bindTcExportPicker();
-      const recordsSearch = document.getElementById('tcRecordsSearch');
-      if (recordsSearch && recordsSearch.dataset.tcBound !== '1') {
-        recordsSearch.dataset.tcBound = '1';
-        recordsSearch.addEventListener('input', tcRenderRecords);
+      const weekHead = document.getElementById('tcWeekDetailHead');
+      if (weekHead && weekHead.dataset.tcBound !== '1') {
+        weekHead.dataset.tcBound = '1';
+        weekHead.addEventListener('click', tcOpenWeekPick);
+      }
+      const weekPickCancel = document.getElementById('tcWeekPickCancel');
+      if (weekPickCancel && weekPickCancel.dataset.tcBound !== '1') {
+        weekPickCancel.dataset.tcBound = '1';
+        weekPickCancel.addEventListener('click', tcCloseWeekPick);
+      }
+      const weekScrim = document.getElementById('tcWeekPickScrim');
+      if (weekScrim && weekScrim.dataset.tcBound !== '1') {
+        weekScrim.dataset.tcBound = '1';
+        weekScrim.addEventListener('click', tcCloseWeekPick);
       }
       const hoursTile = document.getElementById('jdHoursTile');
       if (hoursTile && hoursTile.dataset.tcBound !== '1') {
@@ -8445,9 +9800,9 @@ const IDB_NAME = "FieldPunchlistDB";
       once('btnTcEditSave', tcSaveEdit);
       once('btnTcEditCancel', () => {
         showScreen('screenTimeWeek');
-        document.body.classList.add('on-time');
-        document.body.classList.remove('on-time-edit','on-time-period');
-        tcRenderRecords();
+        document.body.classList.add('on-time-week');
+        document.body.classList.remove('on-time-edit');
+        tcRenderWeekDetail();
       });
       once('btnTcEditDelete', tcDeleteEdit);
       const typeRow = document.getElementById('tcTypeRow');
@@ -8455,9 +9810,12 @@ const IDB_NAME = "FieldPunchlistDB";
         typeRow.dataset.tcBound = '1';
         typeRow.querySelectorAll('.tc-type-chip').forEach(btn => {
           btn.addEventListener('click', () => {
-            if (tcState.active) return;
-            tcState.selectedType = btn.getAttribute('data-type') || 'bakery';
-            tcRenderStatus();
+            const nextType = btn.getAttribute('data-type') || 'bakery';
+            if (typeof tcSwitchType === 'function') tcSwitchType(nextType);
+            else {
+              tcState.selectedType = nextType;
+              tcRenderStatus();
+            }
           });
         });
       }
@@ -9152,37 +10510,56 @@ const IDB_NAME = "FieldPunchlistDB";
     window.openProfileQrViewer = openProfileQrViewer;
     window.profileName = profileName;
 
-    function applyTheme(mode) {
-      const light = mode === 'light';
+    function systemPrefersLight() {
+      try { return window.matchMedia('(prefers-color-scheme: light)').matches; } catch (e) { return false; }
+    }
+    function applyTheme(mode, persist) {
+      if (mode !== 'light' && mode !== 'dark' && mode !== 'system') mode = 'system';
+      if (persist !== false) {
+        try { localStorage.setItem('lx8_theme', mode); } catch (e) {}
+      }
+      const light = mode === 'light' || (mode === 'system' && systemPrefersLight());
       document.documentElement.classList.toggle('theme-light', light);
       document.body.classList.toggle('theme-light', light);
-      try { localStorage.setItem('lx8_theme', light ? 'light' : 'dark'); } catch (e) {}
+      try { document.documentElement.style.colorScheme = light ? 'light' : 'dark'; } catch (e) {}
+      const sysBtn = document.getElementById('themeSystem');
       const darkBtn = document.getElementById('themeDark');
       const lightBtn = document.getElementById('themeLight');
-      if (darkBtn) darkBtn.classList.toggle('on', !light);
-      if (lightBtn) lightBtn.classList.toggle('on', light);
+      if (sysBtn) sysBtn.classList.toggle('on', mode === 'system');
+      if (darkBtn) darkBtn.classList.toggle('on', mode === 'dark');
+      if (lightBtn) lightBtn.classList.toggle('on', mode === 'light');
       try {
         const meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute('content', light ? '#e8eaee' : '#000000');
+        const cs = document.querySelector('meta[name="color-scheme"]');
+        if (cs) cs.setAttribute('content', mode === 'system' ? 'light dark' : (light ? 'light' : 'dark'));
       } catch (e) {}
     }
     function bootTheme() {
-      let mode = 'dark';
-      try { mode = localStorage.getItem('lx8_theme') || 'dark'; } catch (e) {}
-      applyTheme(mode);
-      const darkBtn = document.getElementById('themeDark');
-      const lightBtn = document.getElementById('themeLight');
-      if (darkBtn && darkBtn.dataset.themeBound !== '1') {
-        darkBtn.dataset.themeBound = '1';
-        darkBtn.addEventListener('click', () => applyTheme('dark'));
-      }
-      if (lightBtn && lightBtn.dataset.themeBound !== '1') {
-        lightBtn.dataset.themeBound = '1';
-        lightBtn.addEventListener('click', () => applyTheme('light'));
-      }
+      let mode = 'system';
+      try { mode = localStorage.getItem('lx8_theme') || 'system'; } catch (e) {}
+      if (mode !== 'light' && mode !== 'dark' && mode !== 'system') mode = 'system';
+      applyTheme(mode, false);
+      [['themeSystem','system'],['themeDark','dark'],['themeLight','light']].forEach(([id, val]) => {
+        const btn = document.getElementById(id);
+        if (!btn || btn.dataset.themeBound === '1') return;
+        btn.dataset.themeBound = '1';
+        btn.addEventListener('click', () => applyTheme(val, true));
+      });
+      try {
+        const mq = window.matchMedia('(prefers-color-scheme: light)');
+        const onChange = () => {
+          let stored = 'system';
+          try { stored = localStorage.getItem('lx8_theme') || 'system'; } catch (e) {}
+          if (stored === 'system') applyTheme('system', false);
+        };
+        if (mq.addEventListener) mq.addEventListener('change', onChange);
+        else if (mq.addListener) mq.addListener(onChange);
+      } catch (e) {}
     }
     bootTheme();
     bindProfileForm();
     fillProfileForm();
 
     })();
+

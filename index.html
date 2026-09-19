@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content" />
   <meta name="description" content="LeMatic field service inspections, punchlists, and job reports." />
-  <meta name="color-scheme" content="dark" />
+  <meta name="color-scheme" content="light dark" />
   <meta name="theme-color" content="#000000" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -17,9 +17,16 @@
   <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />
   <title>LeMatic Field Service</title>
     <script>
-    (function(){try{if(localStorage.getItem('lx8_theme')==='light')document.documentElement.classList.add('theme-light');}catch(e){}})();
+    (function(){try{
+      var m=localStorage.getItem('lx8_theme');
+      var light=false;
+      if(m==='light')light=true;
+      else if(m==='dark')light=false;
+      else light=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches;
+      if(light)document.documentElement.classList.add('theme-light');
+    }catch(e){}})();
   </script>
-  <link rel="stylesheet" href="app.css?v=64" />
+  <link rel="stylesheet" href="app.css?v=70" />
   
 
 
@@ -146,6 +153,16 @@
         </div>
         <div class="home-tile-title">Jobs</div>
       </button>
+      <button type="button" class="home-tile" id="homeTileParts">
+        <div class="home-tile-icon" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M14.2 4.8 19.2 9.8 9.8 19.2 4.8 14.2Z" stroke="currentColor" stroke-width="0.9" stroke-linejoin="round"/>
+            <path d="M13 6 18 11" stroke="currentColor" stroke-width="0.9"/>
+            <circle cx="8.2" cy="15.8" r="1.15" stroke="currentColor" stroke-width="0.9"/>
+          </svg>
+        </div>
+        <div class="home-tile-title">Parts Requests</div>
+      </button>
     </div>
     <input type="file" id="restoreZipInput" accept=".zip,application/zip" class="hidden" />
     </div>
@@ -157,9 +174,9 @@
     <div class="list-page-head">
       <div>
         <div class="list-page-kicker">Field service</div>
-        <h2>Time</h2>
+        <h2>Time Cards</h2>
       </div>
-      <button type="button" class="btn btn-outline" id="btnTcExport" style="width:auto;padding:0 14px;height:40px;min-height:40px;line-height:40px;font-size:0.85rem;">Export</button>
+      <button type="button" class="btn btn-outline" id="btnTcExport" title="Export" aria-label="Export">Export</button>
     </div>
 
     <div class="card tc-status-card" id="tcStatusCard">
@@ -181,26 +198,30 @@
       </div>
     </div>
 
-    <div class="tc-footer-actions tc-main-actions">
-      <button type="button" class="btn btn-outline" id="btnTcRecords">Time Records</button>
+    <div class="tc-week-strip" id="tcWeekStrip"></div>
+    <div class="tc-footer-actions">
       <button type="button" class="btn btn-outline" id="btnTcAddManual">Add hours</button>
     </div>
   </div>
 
   <div class="screen" id="screenTimeWeek">
     <div class="list-page-head">
-      <div>
-        <div class="list-page-kicker">Time</div>
-        <h2>Time Records</h2>
+      <div id="tcWeekDetailHead" style="cursor:pointer;flex:1;min-width:0;">
+        <div class="list-page-kicker">Week</div>
+        <h2 id="tcWeekDetailTitle">Week</h2>
+        <select id="tcWeekSelect" aria-label="Select week" class="tc-week-select-native"></select>
       </div>
-      <button type="button" class="btn btn-outline" id="btnTcRecordsExport" style="width:auto;padding:0 14px;height:40px;min-height:40px;line-height:40px;font-size:0.85rem;">Export</button>
+      <button type="button" class="btn btn-outline" id="btnTcWeekExport" title="Export" aria-label="Export">Export</button>
     </div>
-    <div class="card tc-records-search">
-      <input id="tcRecordsSearch" type="search" placeholder="Search bakery, job, date..." autocomplete="off" />
+    <div class="tc-week-totals" id="tcWeekDetailTotals">
+      <span>Bakery<strong id="tcDetBakery">0.00</strong></span>
+      <span>Travel<strong id="tcDetTravel">0.00</strong></span>
+      <span>Shop<strong id="tcDetShop">0.00</strong></span>
+      <span class="tc-total-emph">Total<strong id="tcDetAll">0.00</strong></span>
     </div>
-    <div id="tcEntryList" class="tc-entry-list tc-records-list"></div>
+    <div id="tcEntryList" class="tc-entry-list"></div>
     <div class="tc-footer-actions">
-      <button type="button" class="btn btn-outline" id="btnTcAddManualRecords">Add hours</button>
+      <button type="button" class="btn btn-outline" id="btnTcAddManualWeek">Add hours</button>
     </div>
   </div>
 
@@ -238,7 +259,7 @@
       </div>
       <div class="form-group">
         <label for="tcEditHours">Hours</label>
-        <input type="number" id="tcEditHours" min="0" max="24" step="0.25" inputmode="decimal" />
+        <input type="number" id="tcEditHours" min="0" max="24" step="0.01" inputmode="decimal" />
         <div class="tc-hours-hint" id="tcHoursHint">Calculated from clock in / out — you can override</div>
       </div>
       <div class="form-group">
@@ -310,6 +331,7 @@
     <div class="storage-card" id="themeCard">
       <div class="storage-kicker">Appearance</div>
       <div class="theme-toggle" role="group" aria-label="Theme">
+        <button type="button" class="theme-opt" id="themeSystem" data-theme="system">System</button>
         <button type="button" class="theme-opt" id="themeDark" data-theme="dark">Dark</button>
         <button type="button" class="theme-opt" id="themeLight" data-theme="light">Light</button>
       </div>
@@ -332,11 +354,13 @@
         <div class="job-selector-wrap">
           <select class="job-selector" id="job-select" aria-label="Select job"></select>
         </div>
-        <button type="button" class="btn btn-outline" id="btnPunchlistAllLists" title="All Lists" aria-label="All Lists" style="width:auto;padding:0 14px;height:40px;min-height:40px;line-height:40px;font-size:0.85rem;">All Lists</button>
-        <button type="button" class="btn btn-outline" id="btn-export" title="Export" aria-label="Export" style="width:auto;padding:0 14px;height:40px;min-height:40px;line-height:40px;font-size:0.85rem;">Export</button>
+        <div class="pl-toolbar-actions">
+          <button type="button" class="btn btn-outline" id="btnPunchlistAllLists" title="List" aria-label="List">List</button>
+          <button type="button" class="btn btn-outline" id="btn-export" title="Export" aria-label="Export">Export</button>
+        </div>
       </div>
       <div class="stats-row">
-        <button type="button" class="stat-chip" id="stat-open" data-filter="Not Started"><strong>0</strong> Open</button>
+        <button type="button" class="stat-chip" id="stat-open" data-filter="Not Started"><strong>0</strong> Pending</button>
         <button type="button" class="stat-chip" id="stat-progress" data-filter="In Progress"><strong>0</strong> In Progress</button>
         <button type="button" class="stat-chip" id="stat-done" data-filter="Complete"><strong>0</strong> Done</button>
         <div class="offline-badge" id="offline-badge">OFFLINE</div>
@@ -461,6 +485,13 @@
         <div class="home-tile-title">+ Punchlist</div>
         <span id="jdPunchCount" class="hidden">None yet</span>
       </button>
+      <button type="button" class="home-tile" id="btnJobOpenParts">
+        <div class="home-tile-icon" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M14.2 4.8 19.2 9.8 9.8 19.2 4.8 14.2Z" stroke="currentColor" stroke-width="0.9" stroke-linejoin="round"/><path d="M13 6 18 11" stroke="currentColor" stroke-width="0.9"/><circle cx="8.2" cy="15.8" r="1.15" stroke="currentColor" stroke-width="0.9"/></svg>
+        </div>
+        <div class="home-tile-title">+ Parts Request</div>
+        <span id="jdPartsCount" class="hidden">None yet</span>
+      </button>
       <button type="button" class="home-tile" id="jdHoursTile" style="grid-column:1/-1;">
         <div class="home-tile-icon" aria-hidden="true">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="0.9"/><path d="M12 7.5v5l3.2 2" stroke="currentColor" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -468,32 +499,6 @@
         <div class="home-tile-title">Time Cards</div>
         <span id="jdHoursValue">0.00 h</span>
       </button>
-    </div>
-
-    <div class="card job-detail-progress-card" id="jobDetailProgressCard">
-      <div class="jd-progress-head">
-        <div>
-          <div class="jd-section-label">Job progress</div>
-          <div class="jd-progress-title" id="jdProgressTitle">Work in progress</div>
-        </div>
-        <div class="jd-progress-count" id="jdProgressCount">0 / 3</div>
-      </div>
-      <button type="button" class="jd-progress-row" id="jdProgressInspection">
-        <span class="jd-progress-icon" id="jdProgressInspectionIcon">○</span>
-        <span><b>Inspection</b><small id="jdProgressInspectionText">Not started</small></span>
-        <span class="jd-progress-arrow">›</span>
-      </button>
-      <button type="button" class="jd-progress-row" id="jdProgressPunchlist">
-        <span class="jd-progress-icon" id="jdProgressPunchlistIcon">○</span>
-        <span><b>Punchlist</b><small id="jdProgressPunchlistText">Not started</small></span>
-        <span class="jd-progress-arrow">›</span>
-      </button>
-      <button type="button" class="jd-progress-row" id="jdProgressTime">
-        <span class="jd-progress-icon" id="jdProgressTimeIcon">○</span>
-        <span><b>Time</b><small id="jdProgressTimeText">No hours recorded</small></span>
-        <span class="jd-progress-arrow">›</span>
-      </button>
-      <button type="button" class="btn-job-complete" id="btnCompleteJob">Complete Job</button>
     </div>
 
     <div class="card job-detail-summary" id="jobDetailSummaryCard">
@@ -529,6 +534,128 @@
       <div id="jobDetailTimeList">
         <div class="empty-state compact"><p>No time cards linked to this job yet.</p></div>
       </div>
+    </div>
+
+    <div class="jd-section-label jd-section-pad">Parts Requests</div>
+    <div class="card job-detail-list-card">
+      <div id="jobDetailPartsList">
+        <div class="empty-state compact"><p>No parts requests for this job yet.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PARTS REQUESTS LIST -->
+  <div class="screen" id="screenPartsList">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker">Field service</div>
+        <h2>Parts Requests</h2>
+      </div>
+      <button class="btn btn-primary" id="btnNewParts">+ Parts Request</button>
+    </div>
+    <div class="seg-control" id="partsSeg" data-mode="unsent" role="tablist" aria-label="Parts request status">
+      <span class="seg-thumb" aria-hidden="true"></span>
+      <button type="button" class="seg-btn on" data-status="unsent" role="tab" aria-selected="true">Unsent</button>
+      <button type="button" class="seg-btn" data-status="pending" role="tab" aria-selected="false">Pending</button>
+      <button type="button" class="seg-btn" data-status="complete" role="tab" aria-selected="false">Complete</button>
+    </div>
+    <div class="card">
+      <div id="partsRequestsList">
+        <div class="empty-state">
+          <div class="icon"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" aria-hidden="true"><path d="M14.2 4.8 19.2 9.8 9.8 19.2 4.8 14.2Z" stroke="currentColor" stroke-width="0.9" stroke-linejoin="round"/><path d="M13 6 18 11" stroke="currentColor" stroke-width="0.9"/><circle cx="8.2" cy="15.8" r="1.15" stroke="currentColor" stroke-width="0.9"/></svg></div>
+          <p>No unsent parts requests.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PARTS REQUEST — CREATE / EDIT / REVIEW -->
+  <div class="screen" id="screenPartsForm">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker">Field service</div>
+        <h2 id="pfHeaderTitle">Parts Request</h2>
+      </div>
+      <button type="button" class="btn-edit urgent-toggle" id="btnPartsUrgent">Urgent</button>
+    </div>
+
+    <div class="card job-detail-summary">
+      <div class="jd-row"><span class="jd-label">Job</span><span class="jd-value" id="pfJob">—</span></div>
+      <div class="jd-row"><span class="jd-label">Site</span><span class="jd-value" id="pfSite">—</span></div>
+      <div class="jd-row"><span class="jd-label">Machine</span><span class="jd-value" id="pfMachine">—</span></div>
+      <div class="jd-row"><span class="jd-label">Serial</span><span class="jd-value" id="pfSerial">—</span></div>
+      <div class="jd-row"><span class="jd-label">Sales Order</span><span class="jd-value" id="pfSalesOrder">—</span></div>
+      <div class="jd-row"><span class="jd-label">Technician</span><span class="jd-value" id="pfTech">—</span></div>
+    </div>
+
+    <div class="jd-section-label jd-section-pad">Parts</div>
+    <div class="card job-detail-list-card" data-parts-editable>
+      <div id="partsFormList">
+        <div class="empty-state compact"><p>No parts added yet.</p></div>
+      </div>
+    </div>
+    <div class="parts-add-row" data-parts-editable>
+      <button type="button" class="btn btn-outline" id="btnAddPartsLine">+ Add part</button>
+    </div>
+
+    <div class="btn-row">
+      <button type="button" class="btn btn-outline" id="btnPartsSave" data-parts-editable>Save</button>
+      <button type="button" class="btn btn-primary" id="btnPartsSend">Send</button>
+    </div>
+  </div>
+
+  <!-- PARTS LINE — add/edit one part (mirrors #pl-modal's sliding-sheet pattern) -->
+  <div class="modal-overlay" id="partsLineModal">
+    <div class="modal" id="partsLineModalSheet">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <div class="modal-header">
+        <h2 id="plineTitle">Add part</h2>
+        <button type="button" class="btn-edit urgent-toggle" id="btnLineUrgent">Urgent</button>
+        <label class="header-btn pl-header-camera" title="Add photo" aria-label="Add photo">
+          <svg viewBox="0 0 30 24" width="30" height="24" fill="none" stroke="#000000" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5A2.5 2.5 0 0 1 6 6h3.1l1.15-1.7A1.4 1.4 0 0 1 11.4 3.7h7.2c.46 0 .88.22 1.14.58L20.9 6H24a2.5 2.5 0 0 1 2.5 2.5v9A2.5 2.5 0 0 1 24 20H6A2.5 2.5 0 0 1 3.5 17.5v-9z"/><circle cx="15" cy="13" r="3.5"/></svg>
+          <input type="file" id="plinePhotoInput" accept="image/*">
+        </label>
+      </div>
+      <div class="modal-body">
+        <img id="plinePhotoPreview" class="parts-line-photo-preview hidden" alt="" />
+        <div class="form-group">
+          <label for="plineDesc">Part</label>
+          <input type="text" id="plineDesc" placeholder="e.g. 24V solenoid valve" />
+        </div>
+        <div class="form-group">
+          <label for="plineQty">Quantity</label>
+          <input type="number" id="plineQty" min="1" step="1" value="1" />
+        </div>
+        <div class="form-group">
+          <label for="plinePartNumber">Part # <span class="pline-optional-hint">(optional)</span></label>
+          <input type="text" id="plinePartNumber" placeholder="e.g. LM-HDF-114" />
+        </div>
+        <div class="form-group">
+          <label for="plineNotes">Notes</label>
+          <textarea id="plineNotes" rows="2" placeholder="Optional — e.g. valve is leaking"></textarea>
+        </div>
+        <button type="button" class="btn-edit hidden" id="plineRemove">Remove part</button>
+        <div class="btn-row">
+          <button type="button" class="btn btn-outline" id="plineCancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="plineSave">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PARTS REQUEST — SHARE FALLBACK (Web Share unavailable) -->
+  <div id="partsShareSheet" class="save-sheet" hidden>
+    <div class="save-sheet-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <div class="parts-share-head">
+        <div class="parts-share-eyebrow">Sharing isn't available on this browser</div>
+        <div class="parts-share-title">Copy the request instead</div>
+      </div>
+      <div class="form-group">
+        <textarea id="partsShareText" rows="10" readonly></textarea>
+      </div>
+      <button type="button" class="btn btn-primary" id="btnPartsCopyText">Copy text</button>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="btnPartsShareClose">Close</button>
     </div>
   </div>
 
@@ -858,8 +985,8 @@
   <!-- Bottom bar for inspection -->
   <div class="bottom-bar hidden" id="bottomBar">
     <div class="bar-inspect hidden" id="barInspect">
-      <button class="btn btn-outline hidden" id="btnPrevSection">← Prev</button>
-      <button class="btn btn-primary hidden" id="btnNextSection">Next →</button>
+      <button class="btn btn-outline" id="btnPrevSection">← Prev</button>
+      <button class="btn btn-primary" id="btnNextSection">Next →</button>
     </div>
     <div class="bar-findings hidden" id="barFindings">
       <button class="btn btn-outline" id="btnFindingsBack">Back</button>
@@ -872,7 +999,7 @@
     <div class="bar-preview hidden" id="barPreview">
       <button class="btn btn-outline" id="btnPreviewBack">Back</button>
       <button class="header-btn save-sheet-btn" id="btnSaveInspect" title="Save" aria-label="Save">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M12 3v12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
           <path d="M8 7l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
           <path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
@@ -883,6 +1010,17 @@
   </div>
 
   <div id="saveSheetScrim" class="save-sheet-scrim" hidden></div>
+<div id="tcWeekPickScrim" class="tc-week-pick-scrim" hidden></div>
+  <div id="tcWeekPickSheet" class="tc-week-pick-sheet" hidden>
+    <div class="tc-week-pick-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <div style="padding:4px 4px 10px;text-align:center;">
+        <div style="font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Select week</div>
+      </div>
+      <div id="tcWeekPickList" style="max-height:50vh;overflow-y:auto;-webkit-overflow-scrolling:touch;"></div>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="tcWeekPickCancel">Cancel</button>
+    </div>
+  </div>
   <div id="tcExportScrim" class="tc-export-scrim" hidden></div>
   <div id="tcExportSheet" class="save-sheet tc-export-sheet" hidden>
     <div class="save-sheet-card tc-export-card">
@@ -912,7 +1050,7 @@
           <input type="text" id="tcExportNameInput" placeholder="Technician name" autocomplete="name" style="width:100%;min-height:48px;height:48px;padding:14px;font-size:1rem;border-radius:var(--radius-sm);border:1px solid rgba(249,253,255,0.08);background:#0d0d0f;color:var(--text);" />
         </div>
       </div>
-      <button type="button" class="btn btn-primary" id="tcNameSheetOk">Export</button>
+      <button type="button" class="btn btn-primary" id="tcNameSheetOk"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8.2 9.2H7A2 2 0 0 0 5 11.2v7.6A2 2 0 0 0 7 20.8h10a2 2 0 0 0 2-2V11.2a2 2 0 0 0-2-2h-1.2" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"/><path d="M12 16.2V4.2M12 4.2 8.6 7.6M12 4.2l3.4 3.4" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <button type="button" class="btn btn-outline save-sheet-cancel" id="tcNameSheetCancel">Cancel</button>
     </div>
   </div>
@@ -1021,8 +1159,11 @@
   </div>
 
   <div class="toast" id="toast"></div>
-  <script src="qrcode.min.js?v=64" defer></script>
-  <script src="templates.js?v=64" defer></script>
-  <script src="app.js?v=64" defer></script>
+  
+  
+  
+  <script src="qrcode.min.js?v=70" defer></script>
+  <script src="templates.js?v=70" defer></script>
+  <script src="app.js?v=70" defer></script>
 </body>
 </html>

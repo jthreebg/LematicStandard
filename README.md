@@ -13,6 +13,7 @@ pwa/
   app.css
   app.js
   templates.js
+  qrcode.min.js
   exceljs.min.js
   jspdf.umd.min.js
   jspdf.plugin.autotable.min.js
@@ -25,6 +26,18 @@ pwa/
   manifest.webmanifest
   sw.js
 ```
+
+## What's in this build
+
+This package now contains the current app — the same one that's been
+under active development (Parts Requests feature, its Web Share/photo
+fixes, the light-mode fixes, the punchlist item ID fix, etc.) — split back
+out into the file layout GitHub Pages / this repo actually deploys, rather
+than the single merged HTML file used for in-chat testing.
+
+`app.css` / `app.js` were extracted directly from that current, tested
+`app.html` — not hand-edited separately — so the two should never drift
+out of sync as long as future changes go through the same process.
 
 ## Add to GitHub
 
@@ -76,11 +89,8 @@ If the app is not at the domain root (`/YOUR_REPO/`), keep `start_url` and `scop
 ## Updates not showing on iPhone
 iOS keeps the last installed PWA in cache. After you upload a new build to GitHub:
 
-1. Bump the `?v=` number on `app.css`, `app.js`, `templates.js`, and `sw.js` (already set to 10 in this zip).
+1. Bump the `?v=` number on `app.css`, `app.js`, `templates.js`, and `sw.js` (this build is `v=70`).
 2. Open the app **while online** and leave it on Home for a few seconds.
 3. Swipe it closed, then open it again.
 
 If it is still old: delete the icon from the Home Screen, then Add to Home Screen again from Safari. Safari website data can also be cleared under Settings → Safari → Advanced → Website Data.
-
-### Standardized job workflow
-The Job dashboard is the primary workspace for field service. Inspections, punchlists, and time are surfaced as a three-step progress checklist. Job completion is explicit and can be reopened; existing UI and exports remain available.
