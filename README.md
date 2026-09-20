@@ -19,7 +19,7 @@ pwa/
   jspdf.plugin.autotable.min.js
   (exceljs.min.js / jspdf.umd.min.js / jspdf.plugin.autotable.min.js are
    loaded on demand, only when a PDF/Excel export is used)
-  Punchlist-Template.xlsx
+  Punchlist_Template_ExcelJS.xlsx
   timecard-template.xlsx
   icon-192.png / icon-512.png / icon-512-maskable.png
   apple-touch-icon.png

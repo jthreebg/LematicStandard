@@ -26,7 +26,7 @@
       if(light)document.documentElement.classList.add('theme-light');
     }catch(e){}})();
   </script>
-  <link rel="stylesheet" href="app.css?v=72" />
+  <link rel="stylesheet" href="app.css?v=110" />
   
 
 
@@ -114,56 +114,25 @@
         </div>
       </div>
     </div>
-    <div class="home-tiles">
-      <button type="button" class="home-tile" id="homeTileInspect">
-        <div class="home-tile-icon" aria-hidden="true">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="8" y="3.2" width="8" height="3.6" rx="1" stroke="currentColor" stroke-width="0.9"/>
-            <rect x="5.2" y="5.2" width="13.6" height="15.6" rx="2.4" stroke="currentColor" stroke-width="0.9"/>
-            <path d="M9 12h6M9 16h4" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/>
-          </svg>
-        </div>
-        <div class="home-tile-title">Inspections</div>
+    <button type="button" class="home-view-all-jobs" id="btnViewAllJobs">View all jobs</button>
+    <nav class="home-bottom-nav" aria-label="Primary">
+      <button type="button" class="home-bottom-nav-btn" id="navHomeInspect">
+        <div class="home-bottom-nav-icon home-bottom-nav-icon--clipboard" aria-hidden="true"></div>
+        <div class="home-bottom-nav-label">Inspect</div>
       </button>
-      <button type="button" class="home-tile" id="homeTilePunchlist">
-        <div class="home-tile-icon" aria-hidden="true">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="4.2" y="3.2" width="15.6" height="17.6" rx="2.2" stroke="currentColor" stroke-width="0.9"/>
-            <path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/>
-          </svg>
-        </div>
-        <div class="home-tile-title">Punchlist</div>
+      <button type="button" class="home-bottom-nav-btn" id="navHomeTime">
+        <div class="home-bottom-nav-icon home-bottom-nav-icon--clock" aria-hidden="true"></div>
+        <div class="home-bottom-nav-label">Time</div>
       </button>
-      <button type="button" class="home-tile" id="homeTileTime">
-        <div class="home-tile-icon" aria-hidden="true">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="0.9"/>
-            <path d="M12 7.5v5l3.2 2" stroke="currentColor" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </div>
-        <div class="home-tile-title">Time Cards</div>
+      <button type="button" class="home-bottom-nav-btn" id="navHomePunchlist">
+        <div class="home-bottom-nav-icon home-bottom-nav-icon--checklist" aria-hidden="true"></div>
+        <div class="home-bottom-nav-label">Punchlist</div>
       </button>
-      <button type="button" class="home-tile" id="homeTileJobs">
-        <div class="home-tile-icon" aria-hidden="true">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="4.2" y="8" width="15.6" height="11.2" rx="2" stroke="currentColor" stroke-width="0.9"/>
-            <path d="M9 8V6.8A1.8 1.8 0 0 1 10.8 5h2.4A1.8 1.8 0 0 1 15 6.8V8" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/>
-            <path d="M4.2 12.5h15.6" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/>
-          </svg>
-        </div>
-        <div class="home-tile-title">Jobs</div>
+      <button type="button" class="home-bottom-nav-btn" id="navHomeParts">
+        <div class="home-bottom-nav-icon home-bottom-nav-icon--message" aria-hidden="true"></div>
+        <div class="home-bottom-nav-label">Parts</div>
       </button>
-      <button type="button" class="home-tile" id="homeTileParts">
-        <div class="home-tile-icon" aria-hidden="true">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M14.2 4.8 19.2 9.8 9.8 19.2 4.8 14.2Z" stroke="currentColor" stroke-width="0.9" stroke-linejoin="round"/>
-            <path d="M13 6 18 11" stroke="currentColor" stroke-width="0.9"/>
-            <circle cx="8.2" cy="15.8" r="1.15" stroke="currentColor" stroke-width="0.9"/>
-          </svg>
-        </div>
-        <div class="home-tile-title">Parts Requests</div>
-      </button>
-    </div>
+    </nav>
     <input type="file" id="restoreZipInput" accept=".zip,application/zip" class="hidden" />
     </div>
   </div>
@@ -487,7 +456,7 @@
       </button>
       <button type="button" class="home-tile" id="btnJobOpenParts">
         <div class="home-tile-icon" aria-hidden="true">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M14.2 4.8 19.2 9.8 9.8 19.2 4.8 14.2Z" stroke="currentColor" stroke-width="0.9" stroke-linejoin="round"/><path d="M13 6 18 11" stroke="currentColor" stroke-width="0.9"/><circle cx="8.2" cy="15.8" r="1.15" stroke="currentColor" stroke-width="0.9"/></svg>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="4.5" y="5" width="15" height="10.4" rx="3.2" stroke="currentColor" stroke-width="0.9"/><path d="M8.6 15.4v3.6l4-3.6" stroke="currentColor" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round"/><path d="M7.8 8.6h9M7.8 11.4h5.8" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/></svg>
         </div>
         <div class="home-tile-title">+ Parts Request</div>
         <span id="jdPartsCount" class="hidden">None yet</span>
@@ -562,7 +531,7 @@
     <div class="card">
       <div id="partsRequestsList">
         <div class="empty-state">
-          <div class="icon"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" aria-hidden="true"><path d="M14.2 4.8 19.2 9.8 9.8 19.2 4.8 14.2Z" stroke="currentColor" stroke-width="0.9" stroke-linejoin="round"/><path d="M13 6 18 11" stroke="currentColor" stroke-width="0.9"/><circle cx="8.2" cy="15.8" r="1.15" stroke="currentColor" stroke-width="0.9"/></svg></div>
+          <div class="icon"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" aria-hidden="true"><rect x="4.5" y="5" width="15" height="10.4" rx="3.2" stroke="currentColor" stroke-width="0.9"/><path d="M8.6 15.4v3.6l4-3.6" stroke="currentColor" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round"/><path d="M7.8 8.6h9M7.8 11.4h5.8" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/></svg></div>
           <p>No unsent parts requests.</p>
         </div>
       </div>
@@ -573,19 +542,19 @@
   <div class="screen" id="screenPartsForm">
     <div class="list-page-head">
       <div>
-        <div class="list-page-kicker">Field service</div>
+        <div class="list-page-kicker-row">
+          <span class="list-page-kicker">Field service</span>
+          <button type="button" class="btn-edit urgent-toggle" id="btnPartsUrgent">Urgent</button>
+        </div>
         <h2 id="pfHeaderTitle">Parts Request</h2>
       </div>
-      <button type="button" class="btn-edit urgent-toggle" id="btnPartsUrgent">Urgent</button>
+      <button type="button" class="btn btn-primary" id="btnAddPartsLine" data-parts-editable>+ Add part</button>
     </div>
 
     <div class="card job-detail-summary">
       <div class="jd-row"><span class="jd-label">Job</span><span class="jd-value" id="pfJob">—</span></div>
       <div class="jd-row"><span class="jd-label">Site</span><span class="jd-value" id="pfSite">—</span></div>
       <div class="jd-row"><span class="jd-label">Machine</span><span class="jd-value" id="pfMachine">—</span></div>
-      <div class="jd-row"><span class="jd-label">Serial</span><span class="jd-value" id="pfSerial">—</span></div>
-      <div class="jd-row"><span class="jd-label">Sales Order</span><span class="jd-value" id="pfSalesOrder">—</span></div>
-      <div class="jd-row"><span class="jd-label">Technician</span><span class="jd-value" id="pfTech">—</span></div>
     </div>
 
     <div class="jd-section-label jd-section-pad">Parts</div>
@@ -593,9 +562,6 @@
       <div id="partsFormList">
         <div class="empty-state compact"><p>No parts added yet.</p></div>
       </div>
-    </div>
-    <div class="parts-add-row" data-parts-editable>
-      <button type="button" class="btn btn-outline" id="btnAddPartsLine">+ Add part</button>
     </div>
 
     <div class="btn-row">
@@ -623,18 +589,20 @@
           <input type="text" id="plineDesc" placeholder="e.g. 24V solenoid valve" />
         </div>
         <div class="form-group">
-          <label for="plineQty">Quantity</label>
-          <input type="number" id="plineQty" min="1" step="1" value="1" />
-        </div>
-        <div class="form-group">
-          <label for="plinePartNumber">Part # <span class="pline-optional-hint">(optional)</span></label>
-          <input type="text" id="plinePartNumber" placeholder="e.g. LM-HDF-114" />
-        </div>
-        <div class="form-group">
           <label for="plineNotes">Notes</label>
           <textarea id="plineNotes" rows="2" placeholder="Optional — e.g. valve is leaking"></textarea>
         </div>
-        <button type="button" class="btn-edit hidden" id="plineRemove">Remove part</button>
+        <div class="form-group">
+          <label for="plineQty">Quantity</label>
+          <select id="plineQty"></select>
+        </div>
+        <!-- Part # kept in the data model (share text, saved line, list
+             sub-line all still read it) but hidden from the tech-facing
+             sheet — planned for a future manager view instead. -->
+        <div class="form-group hidden">
+          <label for="plinePartNumber">Part # <span class="pline-optional-hint">(optional)</span></label>
+          <input type="text" id="plinePartNumber" placeholder="e.g. LM-HDF-114" />
+        </div>
         <div class="btn-row">
           <button type="button" class="btn btn-outline" id="plineCancel">Cancel</button>
           <button type="button" class="btn btn-primary" id="plineSave">Save</button>
@@ -810,6 +778,13 @@
 
   <!-- FINDINGS -->
   <div class="screen" id="screenFindings">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker">Field service</div>
+        <h2>Findings</h2>
+      </div>
+      <button type="button" class="btn btn-outline" id="btnInspectExport" title="Export" aria-label="Export">Export</button>
+    </div>
     <div id="inspectInfoCard" class="inspect-info-card">
       <div class="inspect-info-kicker">Field service trip report</div>
       <div class="inspect-info-name" id="inspectInfoCustomer">—</div>
@@ -820,13 +795,6 @@
     <div id="irPreviewSheet" class="visit-sheet hidden" hidden></div>
 
     <div class="inspect-home-tiles">
-      <button type="button" class="home-tile" id="btnInspectHomeStart" onclick="window.startInspectFromHome && window.startInspectFromHome()">
-        <div class="home-tile-title">Start inspection</div>
-      </button>
-      <button type="button" class="home-tile inspect-count-tile" id="tileGood" data-filter="good" onclick="window.filterInspectHome && window.filterInspectHome('good')">
-        <div class="num" id="sumGood">0</div>
-        <div class="home-tile-title">Good</div>
-      </button>
       <button type="button" class="home-tile inspect-count-tile" id="tileFair" data-filter="fair" onclick="window.filterInspectHome && window.filterInspectHome('fair')">
         <div class="num" id="sumFair">0</div>
         <div class="home-tile-title">Fair</div>
@@ -885,27 +853,6 @@
 
   <!-- Delete confirm modal — Liquid Glass -->
 
-
-  <div id="jobDatesModal" class="modal-overlay hidden" aria-hidden="true">
-    <div class="modal machine-sheet" role="dialog">
-      <div class="modal-handle" aria-hidden="true"></div>
-      <div class="modal-header"><h2>Trip dates</h2></div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label>Start date</label>
-          <input type="date" id="homeJobDateStart" />
-        </div>
-        <div class="form-group">
-          <label>End date</label>
-          <input type="date" id="homeJobDateEnd" />
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button type="button" id="jobDatesCancel" class="btn btn-outline">Cancel</button>
-        <button type="button" id="jobDatesSave" class="btn btn-primary">Save</button>
-      </div>
-    </div>
-  </div>
   <div id="machineModal" class="modal-overlay hidden" aria-hidden="true">
     <div class="modal machine-sheet" role="dialog" aria-modal="true" aria-labelledby="machineModalTitle">
       <div class="modal-handle" aria-hidden="true"></div>
@@ -1058,6 +1005,7 @@
     <div class="save-sheet-card">
       <div class="save-sheet-handle" aria-hidden="true"></div>
       <button type="button" class="btn btn-primary" id="plExportPdf">Save PDF</button>
+      <button type="button" class="btn btn-primary" id="plExportFindings">Export Findings</button>
       <button type="button" class="btn btn-primary" id="plExportXlsx">Save Excel</button>
       <button type="button" class="btn btn-outline save-sheet-cancel" id="plExportCancel">Cancel</button>
     </div>
@@ -1162,8 +1110,8 @@
   
   
   
-  <script src="qrcode.min.js?v=72" defer></script>
-  <script src="templates.js?v=72" defer></script>
-  <script src="app.js?v=72" defer></script>
+  <script src="qrcode.min.js?v=110" defer></script>
+  <script src="templates.js?v=110" defer></script>
+  <script src="app.js?v=110" defer></script>
 </body>
 </html>

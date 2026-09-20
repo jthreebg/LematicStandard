@@ -485,7 +485,9 @@ const ICO = {
       const barInspect = document.getElementById('barInspect');
       const bars = {
         screenInspect: 'barInspect',
-        screenFindings: 'barFindings',
+        // screenFindings intentionally has no bottom bar — replaced with a
+        // header Export button (see #btnInspectExport), matching the
+        // Time Cards / Punchlist pattern instead of Back+Save.
         screenNotes: 'barFindings',
         screenInspectPreview: 'barFindings'
       };
@@ -872,40 +874,6 @@ const ICO = {
     function getCurrentJobs() {
       return loadJobs().filter(j => j && !isPastJobByDate(j));
     }
-    let homeDateEditJobId = null;
-    function openHomeJobDatesEditor(jobId) {
-      const job = loadJobs().find(j => j.id === jobId);
-      if (!job) return;
-      homeDateEditJobId = jobId;
-      const s = document.getElementById('homeJobDateStart');
-      const e = document.getElementById('homeJobDateEnd');
-      if (s) s.value = job.date || '';
-      if (e) e.value = job.endDate || '';
-      const modal = document.getElementById('jobDatesModal');
-      if (!modal) return;
-      modal.classList.remove('hidden');
-      modal.classList.add('show');
-    }
-    function closeHomeJobDatesEditor() {
-      const modal = document.getElementById('jobDatesModal');
-      if (!modal) return;
-      modal.classList.add('hidden');
-      modal.classList.remove('show');
-      homeDateEditJobId = null;
-    }
-    function saveHomeJobDates() {
-      if (!homeDateEditJobId) return;
-      const list = loadJobs();
-      const job = list.find(j => j.id === homeDateEditJobId);
-      if (!job) return;
-      job.date = (document.getElementById('homeJobDateStart') || {}).value || '';
-      job.endDate = (document.getElementById('homeJobDateEnd') || {}).value || '';
-      job.status = jobStatusFromDates(job);
-      saveJobs(list);
-      closeHomeJobDatesEditor();
-      refreshHomeCurrentJob();
-      if (typeof refreshJobsList === 'function') refreshJobsList();
-    }
     function refreshHomeCurrentJob() {
       const card = document.getElementById('homeCurrentJobCard');
       if (!card) return;
@@ -939,7 +907,7 @@ const ICO = {
         item.innerHTML = `
           <div class="hj-top">
             <span class="hj-label">Current job</span>
-            <button type="button" class="hj-dates" id="homeCurrentJobDates">${dateRange ? jobEsc(dateRange) : 'Set dates'}</button>
+            <span class="hj-dates">${dateRange ? jobEsc(dateRange) : 'No dates set'}</span>
           </div>
           <div class="hj-name">${jobEsc(job.customer || 'Untitled job')}</div>
           ${siteLine ? `<div class="hj-meta">${jobEsc(siteLine)}</div>` : ''}
@@ -964,14 +932,7 @@ const ICO = {
         }
       }
       card.onclick = (e) => {
-        if (e.target.closest('.hj-dates')) return;
         if (typeof openJobDetail === 'function') openJobDetail(job.id);
-      };
-      const dateBtn = document.getElementById('homeCurrentJobDates');
-      if (dateBtn) dateBtn.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        openHomeJobDatesEditor(job.id);
       };
     }
 
@@ -1724,14 +1685,14 @@ const ICO = {
       const list = all.filter(r => (r.status || 'unsent') === partsListStatus);
       if (!list.length) {
         container.innerHTML = `<div class="empty-state">
-          <div class="icon"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" aria-hidden="true"><path d="M14.2 4.8 19.2 9.8 9.8 19.2 4.8 14.2Z" stroke="currentColor" stroke-width="0.9" stroke-linejoin="round"/><path d="M13 6 18 11" stroke="currentColor" stroke-width="0.9"/><circle cx="8.2" cy="15.8" r="1.15" stroke="currentColor" stroke-width="0.9"/></svg></div>
+          <div class="icon"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" aria-hidden="true"><rect x="4.5" y="5" width="15" height="10.4" rx="3.2" stroke="currentColor" stroke-width="0.9"/><path d="M8.6 15.4v3.6l4-3.6" stroke="currentColor" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round"/><path d="M7.8 8.6h9M7.8 11.4h5.8" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/></svg></div>
           <p>No ${jobEsc(partsRequestStatusLabel(partsListStatus).toLowerCase())} parts requests.</p>
         </div>`;
         return;
       }
       container.innerHTML = list.map(req => {
         const sum = partsRequestSummary(req);
-        return `<div class="pl-item" data-id="${req.id}">
+        return `<div class="pl-item${partsRequestHasUrgent(req) ? ' priority-high' : ''}" data-id="${req.id}">
           <div class="list-item-main">
             <div class="title">Parts Request${req.seq ? ' #' + req.seq : ''}${partsRequestHasUrgent(req) ? ' <span class="badge badge-urgent">Urgent</span>' : ''}</div>
             <div class="sub">${jobEsc(sum.sub || 'No job linked')}</div>
@@ -1806,9 +1767,12 @@ const ICO = {
       document.getElementById('pfJob').textContent = dash(req.customer);
       document.getElementById('pfSite').textContent = dash(req.site);
       document.getElementById('pfMachine').textContent = dash(req.machine);
-      document.getElementById('pfSerial').textContent = dash(req.serial);
-      document.getElementById('pfSalesOrder').textContent = dash(req.salesOrder);
-      document.getElementById('pfTech').textContent = dash(req.technician);
+      // Serial / Sales Order / Technician are still fully auto-filled on
+      // the request object (see newPartsRequestDraft) and still go out
+      // in the share text — just no longer shown in this on-screen
+      // summary. A tech only needs Job/Site/Machine to confirm they're
+      // on the right request; the rest is populated for the recipient,
+      // not something they need to double-check here.
       const urgentBtn = document.getElementById('btnPartsUrgent');
       if (urgentBtn) urgentBtn.classList.toggle('on', !!req.urgent);
       const readOnly = req.status !== 'unsent';
@@ -1822,7 +1786,7 @@ const ICO = {
       if (!parts.length) {
         listEl.innerHTML = `<div class="empty-state compact"><p>No parts added yet.</p></div>`;
       } else {
-        listEl.innerHTML = parts.map(p => `<div class="pl-item" data-line-id="${p.id}">
+        listEl.innerHTML = parts.map(p => `<div class="pl-item${p.urgent ? ' priority-high' : ''}" data-line-id="${p.id}">
           <div class="list-item-main">
             <div class="title">${jobEsc(p.description || 'Unnamed part')}${p.urgent ? ' <span class="badge badge-urgent">Urgent</span>' : ''}</div>
             <div class="sub">Qty ${p.qty || 1}${p.partNumber ? ' · ' + jobEsc(p.partNumber) : ''}</div>
@@ -1855,7 +1819,19 @@ const ICO = {
       const line = lineIdOrNull ? (partsFormDraft.parts || []).find(p => p.id === lineIdOrNull) : newPartsRequestLine();
       document.getElementById('plineTitle').textContent = lineIdOrNull ? 'Edit part' : 'Add part';
       document.getElementById('plineDesc').value = line.description || '';
-      document.getElementById('plineQty').value = line.qty || 1;
+      const qtySelect = document.getElementById('plineQty');
+      // Native <select> picker, same as the rest of the app (job/machine/
+      // status pickers etc.) — iOS/Android render this as their own
+      // built-in wheel/list picker.
+      if (qtySelect && !qtySelect.options.length) {
+        for (let n = 1; n <= 20; n++) {
+          const opt = document.createElement('option');
+          opt.value = String(n);
+          opt.textContent = String(n);
+          qtySelect.appendChild(opt);
+        }
+      }
+      qtySelect.value = line.qty || 1;
       document.getElementById('plinePartNumber').value = line.partNumber || '';
       document.getElementById('plineNotes').value = line.notes || '';
       const urgentBtn = document.getElementById('btnLineUrgent');
@@ -1863,7 +1839,6 @@ const ICO = {
       const thumb = document.getElementById('plinePhotoPreview');
       if (line.photoThumb) { thumb.src = line.photoThumb; thumb.classList.remove('hidden'); }
       else { thumb.src = ''; thumb.classList.add('hidden'); }
-      document.getElementById('plineRemove').classList.toggle('hidden', !lineIdOrNull);
       window.__partsLineDraftPhoto = { photoId: line.photoId, photoThumb: line.photoThumb };
       document.getElementById('partsLineModal').classList.add('show');
     }
@@ -1893,13 +1868,6 @@ const ICO = {
       // whatever parts had just been added.
       savePartsFormDraft(false);
     }
-    function removePartsLineModal() {
-      if (partsLineEditingId) partsFormDraft.parts = partsFormDraft.parts.filter(p => p.id !== partsLineEditingId);
-      closePartsLineModal();
-      renderPartsForm();
-      savePartsFormDraft(false);
-    }
-
     // readFileDataUrl exists elsewhere in this app but is private to a
     // different module's closure, not globally accessible — this is its
     // own small, self-contained copy rather than reaching into that
@@ -3197,11 +3165,19 @@ const ICO = {
       setActiveMachine(ins.model || 'LX-8');
       results = ins.results || {};
       findings = ins.findings || [];
-      currentSectionIndex = Math.max(0, ins.currentSectionIndex || 0);
-      currentItemIndex = Math.max(0, ins.currentItemIndex || 0);
+      // Always the actual first section, not wherever a previous session
+      // left off — a saved currentSectionIndex from earlier progress
+      // used to make this "resume in place", which looked like landing
+      // on the wrong section. The dots still let a tech jump straight to
+      // any section (including Findings, last) if they want to pick up
+      // partway through instead.
+      currentSectionIndex = 0;
+      currentItemIndex = 0;
       editingInspectionId = null;
-      extraSectionTab = 'findings';
-      showFindings();
+      extraSectionTab = null;
+      showScreen('screenInspect');
+      setHeader('Inspecting');
+      renderSection(true);
     }
 
     function editInspectionMeta(id) {
@@ -3311,7 +3287,7 @@ const ICO = {
       toast('Orangeburg Line 1 example loaded');
     });
 
-    document.getElementById('homeTileInspect').addEventListener('click', () => {
+    document.getElementById('navHomeInspect').addEventListener('click', () => {
       closeSearch();
       showScreen('screenInspectList');
       setHeader('Inspections');
@@ -3398,7 +3374,7 @@ const ICO = {
       plLinkView.dataset.bound = '1';
       plLinkView.addEventListener('click', viewLinkedPunchlistJob);
     }
-    document.getElementById('homeTilePunchlist').addEventListener('click', () => {
+    document.getElementById('navHomePunchlist').addEventListener('click', () => {
       resumeLastPunchlistOrList();
     });
 
@@ -3410,7 +3386,8 @@ const ICO = {
     if (btnPunchlistAllLists) btnPunchlistAllLists.addEventListener('click', () => {
       openPunchlistRecentList();
     });
-    document.getElementById('homeTileJobs').addEventListener('click', () => {
+    const btnViewAllJobs = document.getElementById('btnViewAllJobs');
+    if (btnViewAllJobs) btnViewAllJobs.addEventListener('click', () => {
       closeSearch();
       showScreen('screenJobsList');
       setHeader('Jobs');
@@ -3418,7 +3395,7 @@ const ICO = {
     });
 
     // ===== PARTS REQUESTS bindings =====
-    const homeTileParts = document.getElementById('homeTileParts');
+    const homeTileParts = document.getElementById('navHomeParts');
     if (homeTileParts) homeTileParts.addEventListener('click', () => {
       closeSearch();
       setPartsListTab('unsent');
@@ -3462,8 +3439,6 @@ const ICO = {
     if (plineCancel) plineCancel.addEventListener('click', closePartsLineModal);
     const plineSave = document.getElementById('plineSave');
     if (plineSave) plineSave.addEventListener('click', savePartsLineModal);
-    const plineRemove = document.getElementById('plineRemove');
-    if (plineRemove) plineRemove.addEventListener('click', removePartsLineModal);
     const plinePhotoInput = document.getElementById('plinePhotoInput');
     if (plinePhotoInput) plinePhotoInput.addEventListener('change', (e) => {
       const file = e.target.files && e.target.files[0];
@@ -3512,14 +3487,6 @@ const ICO = {
     if (btnJobMachinePopup) btnJobMachinePopup.addEventListener('click', () => {
       machineModalMode = 'job';
       openMachineModal();
-    });
-    const jobDatesCancel = document.getElementById('jobDatesCancel');
-    if (jobDatesCancel) jobDatesCancel.addEventListener('click', closeHomeJobDatesEditor);
-    const jobDatesSave = document.getElementById('jobDatesSave');
-    if (jobDatesSave) jobDatesSave.addEventListener('click', saveHomeJobDates);
-    const jobDatesModal = document.getElementById('jobDatesModal');
-    if (jobDatesModal) jobDatesModal.addEventListener('click', (e) => {
-      if (e.target.id === 'jobDatesModal') closeHomeJobDatesEditor();
     });
     const machineCancel = document.getElementById('machineModalCancel');
     if (machineCancel) machineCancel.addEventListener('click', () => {
@@ -4196,7 +4163,7 @@ const ICO = {
         const label = shortSectionName(s.section);
         return `<div class="${cls}" data-idx="${idx}" title="${s.section}">${label}</div>`;
       }).join('');
-      html = `<div class="section-dot${extraSectionTab === 'findings' ? ' current' : ''}" data-extra="findings">Home</div>` + html;
+      html = html + `<div class="section-dot${extraSectionTab === 'findings' ? ' current' : ''}" data-extra="findings">Findings</div>`;
       container.innerHTML = html;
       container.querySelectorAll('.section-dot').forEach(d => {
         d.addEventListener('click', () => {
@@ -4669,20 +4636,7 @@ const ICO = {
       });
       renderInspectHomeFilter();
     };
-    window.startInspectFromHome = function() {
-      extraSectionTab = null;
-      currentSectionIndex = 0;
-      currentItemIndex = 0;
-      showScreen('screenInspect');
-      setHeader('Inspecting');
-      renderSection(true);
-    };
     function bindInspectHomeTiles() {
-      const startInspectBtn = document.getElementById('btnInspectHomeStart');
-      if (startInspectBtn && startInspectBtn.dataset.bound !== '1') {
-        startInspectBtn.dataset.bound = '1';
-        startInspectBtn.addEventListener('click', () => window.startInspectFromHome());
-      }
       document.querySelectorAll('.inspect-count-tile').forEach(btn => {
         if (btn.dataset.bound === '1') return;
         btn.dataset.bound = '1';
@@ -4814,10 +4768,8 @@ const ICO = {
         if (elM) elM.textContent = machineLine;
       })();
       const counts = inspectConditionCounts();
-      const g = document.getElementById('sumGood');
       const f = document.getElementById('sumFair');
       const p = document.getElementById('sumPoor');
-      if (g) g.textContent = counts.good;
       if (f) f.textContent = counts.fair;
       if (p) p.textContent = counts.poor;
       const totalAnswered = Object.keys(results).length;
@@ -4917,16 +4869,6 @@ const ICO = {
       showScreen('screenInspect');
       setHeader('Inspecting');
     });
-    const startInspectBtn = document.getElementById('btnInspectHomeStart');
-    if (startInspectBtn) startInspectBtn.addEventListener('click', () => {
-      extraSectionTab = null;
-      const items = currentSectionItems();
-      const open = items.findIndex(it => !results[it.item_id] || !results[it.item_id].condition);
-      if (open >= 0) currentItemIndex = open;
-      showScreen('screenInspect');
-      setHeader('Inspecting');
-      renderSection(true);
-    });
     document.querySelectorAll('.inspect-count-tile').forEach(btn => {
       btn.addEventListener('click', () => {
         const next = btn.getAttribute('data-filter') || '';
@@ -4937,6 +4879,15 @@ const ICO = {
     });
 
     document.getElementById('btnFindingsNext').addEventListener('click', () => {
+      if (typeof syncNotesField === 'function') syncNotesField();
+      if (currentInspection) {
+        currentInspection.summaryNotes = (document.getElementById('summaryNotes') || {}).value || currentInspection.summaryNotes;
+        saveCurrentDraft();
+      }
+      if (typeof openSaveSheet === 'function') openSaveSheet();
+    });
+    const btnInspectExport = document.getElementById('btnInspectExport');
+    if (btnInspectExport) btnInspectExport.addEventListener('click', () => {
       if (typeof syncNotesField === 'function') syncNotesField();
       if (currentInspection) {
         currentInspection.summaryNotes = (document.getElementById('summaryNotes') || {}).value || currentInspection.summaryNotes;
@@ -5059,7 +5010,6 @@ const ICO = {
         if (has('pl-modal')) { closeModal(); closed = true; }
         if (has('deleteModal')) { closeDeleteModal(); closed = true; }
         if (has('machineModal')) { closeMachineModal(); closed = true; }
-        if (has('jobDatesModal')) { closeHomeJobDatesEditor(); closed = true; }
         if (has('jobPickerModal')) { closeJobPicker(); closed = true; }
         if (has('plExportSheet')) { closePlExportSheet(); closed = true; }
         if (has('saveSheet')) { closeSaveSheet(); closed = true; }
@@ -5068,6 +5018,15 @@ const ICO = {
         if (has('plLinkJobSheet')) { closePunchlistLinkSheet(); closed = true; }
         if (has('partsLineModal')) { closePartsLineModal(); closed = true; }
         if (has('partsShareSheet')) { closePartsShareSheet(); closed = true; }
+        if (has('plStartSheet')) { closePunchlistStartSheet(); closed = true; }
+        // In practice this specific check can't fire from a real tap:
+        // the photo viewer is a full-screen overlay at z-index 24000,
+        // covering the header (and its Back button) entirely by design
+        // while open — closing it relies on its own dedicated × button,
+        // not this header. Left in as a harmless safety net in case
+        // that layering ever changes.
+        const photoViewer = document.getElementById('pl-photo-viewer');
+        if (photoViewer && !photoViewer.hidden) { closePunchlistPhoto(); closed = true; }
         if (has('tcNameSheet')) {
           const el = document.getElementById('tcNameSheet');
           el.classList.remove('show'); el.hidden = true; el.setAttribute('hidden','');
@@ -5787,10 +5746,6 @@ const ICO = {
         row.getCell(5).value = f ? (f.notes || f.item_name || '') : '';
       });
       const safe = String(customer).replace(/[\\/:*?"<>|]/g, '-').trim() || 'Inspection';
-      for (let r = firstDataRow + items.length; r <= lastTemplateRow; r++) {
-        clearUnusedRow(ws.getRow(r));
-      }
-
       const out = await wb.xlsx.writeBuffer();
       const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const a = document.createElement('a');
@@ -6313,6 +6268,39 @@ const ICO = {
           }
         });
       });
+      loadPartsRequests().forEach(req => {
+        const partBits = [];
+        (req.parts || []).forEach(p => {
+          partBits.push(p.description, p.notes, p.partNumber);
+        });
+        const hay = searchHay([
+          req.customer, req.site, req.machine, req.serial, req.salesOrder, req.technician, req.status,
+          req.seq ? ('#' + req.seq) : '',
+          searchDateHay(req.createdAt), searchDateHay(req.updatedAt)
+        ].concat(partBits));
+        const sum = partsRequestSummary(req);
+        if (hay.includes(q)) {
+          rows.push({
+            kind: 'parts-request',
+            id: req.id,
+            kicker: 'Parts Request',
+            title: 'Parts Request' + (req.seq ? ' #' + req.seq : ''),
+            sub: [sum.sub, sum.partsCount + ' part' + (sum.partsCount !== 1 ? 's' : ''), partsRequestStatusLabel(req.status)].filter(Boolean).join(' · ')
+          });
+        }
+        (req.parts || []).forEach(p => {
+          const ph = searchHay([p.description, p.notes, p.partNumber]);
+          if (ph.includes(q)) {
+            rows.push({
+              kind: 'parts-request',
+              id: req.id,
+              kicker: 'Part',
+              title: p.description || 'Unnamed part',
+              sub: [req.customer, 'Qty ' + (p.qty || 1), p.partNumber].filter(Boolean).join(' · ')
+            });
+          }
+        });
+      });
       try {
         if (typeof tcLoad === 'function') tcLoad();
         const entries = (typeof tcState !== 'undefined' && tcState && tcState.entries) ? tcState.entries : [];
@@ -6335,21 +6323,9 @@ const ICO = {
           }
         });
       } catch (e) {}
-      try {
-        const punch = (typeof window.getPunchlistSummaries === 'function') ? null : null;
-      } catch (e) {}
-      const punchNames = [];
-      try {
-        if (window.__plData && window.__plData.jobs) {
-          Object.keys(window.__plData.jobs).forEach(name => punchNames.push(name));
-        }
-      } catch (e) {}
-      // punchlist internal data
-      try {
-        if (typeof window.getPunchlistSummaries === 'function') {
-          /* summaries filled async below */
-        }
-      } catch (e) {}
+      // Punchlist results are appended asynchronously below via
+      // getPunchlistSummaries()/searchPunchlistItems(), since that data
+      // isn't available synchronously the way Jobs/Inspections/Parts are.
 
       function paint(extraPunch) {
         const all = rows.concat(extraPunch || []).slice(0, 40);
@@ -6394,6 +6370,8 @@ const ICO = {
                 }
               } else if (kind === 'timecard') {
                 if (typeof openTimeCards === 'function') openTimeCards();
+              } else if (kind === 'parts-request') {
+                if (typeof openPartsForm === 'function') openPartsForm(id);
               }
             });
           });
@@ -6648,6 +6626,101 @@ const ICO = {
 
   
     // ========== PUNCHLIST ==========
+    /* Excel/PDF library loader — moved here from inside
+       punchlistModule's closure below, where it was defined but
+       never actually reachable from outside that IIFE. That silently
+       broke every OTHER feature's Excel export (confirmed: Inspection
+       Excel export threw "ensureExcelLibs is not defined"), even
+       though Punchlist's own export worked fine since it's called
+       from inside the same closure. Now genuinely global so Time
+       Cards, Punchlist, and Inspections can all reach it. */
+    function loadScriptOnce(src) {
+      return new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-lib-src="' + src + '"]');
+        if (existing) {
+          if (existing.getAttribute('data-loaded') === '1') return resolve();
+          existing.addEventListener('load', () => resolve());
+          existing.addEventListener('error', () => reject(new Error('Failed ' + src)));
+          return;
+        }
+        const s = document.createElement('script');
+        s.src = src;
+        s.async = true;
+        s.setAttribute('data-lib-src', src);
+        s.onload = () => { s.setAttribute('data-loaded', '1'); resolve(); };
+        s.onerror = () => reject(new Error('Failed ' + src));
+        document.head.appendChild(s);
+      });
+    }
+
+
+    const EXPORT_LIB_BTNS = ['tcExportContinue','saveSheetXlsx','plExportXlsx'];
+    function excelLibsReady() { return typeof ExcelJS !== 'undefined'; }
+    function setExportButtonsReady(ready) {
+      EXPORT_LIB_BTNS.forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.disabled = !ready;
+        el.setAttribute('aria-disabled', ready ? 'false' : 'true');
+        el.classList.toggle('is-waiting-lib', !ready);
+        if (!el.dataset.readyLabel) el.dataset.readyLabel = el.textContent;
+        if (!ready) el.textContent = 'Loading Excel…';
+        else el.textContent = el.dataset.readyLabel;
+      });
+    }
+    let excelWarm;
+    function warmExcelLibs() {
+      if (excelLibsReady()) { setExportButtonsReady(true); return Promise.resolve(true); }
+      if (excelWarm) return excelWarm;
+      setExportButtonsReady(false);
+      excelWarm = ensureExcelLibs().then(() => {
+        const ok = excelLibsReady();
+        setExportButtonsReady(ok);
+        return ok;
+      }).catch((err) => {
+        console.warn(err);
+        setExportButtonsReady(false);
+        EXPORT_LIB_BTNS.forEach((id) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = 'Excel unavailable';
+        });
+        return false;
+      });
+      return excelWarm;
+    }
+    async function ensureExportLibs() {
+      return ensureExcelLibs();
+    }
+    async function ensureExcelLibs() {
+      if (typeof ExcelJS === 'undefined') {
+        const urls = [
+          'exceljs.min.js',
+          'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js'
+        ];
+        for (const url of urls) {
+          try {
+            await loadScriptOnce(url);
+            if (typeof ExcelJS !== 'undefined') break;
+          } catch (e) {}
+        }
+      }
+      if (typeof window.jspdf === 'undefined') {
+        const pdfUrls = [
+          'jspdf.umd.min.js',
+          'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js'
+        ];
+        for (const url of pdfUrls) {
+          try {
+            await loadScriptOnce(url);
+            if (typeof window.jspdf !== 'undefined') break;
+          } catch (e) {}
+        }
+        if (typeof window.jspdf !== 'undefined' && typeof window.jspdf.jsPDF.API.autoTable === 'undefined') {
+          try { await loadScriptOnce('jspdf.plugin.autotable.min.js'); } catch (e) {}
+        }
+      }
+    }
+
     (function punchlistModule() {
 const IDB_NAME = "FieldPunchlistDB";
     const IDB_VERSION = 1;
@@ -6985,6 +7058,7 @@ const IDB_NAME = "FieldPunchlistDB";
         </div>
       `;
       document.getElementById("pl-modal").classList.add("show");
+      document.getElementById("pl-modal").style.pointerEvents = "";
       if (typeof pinPlModalBar === 'function') pinPlModalBar();
       const fieldSel = document.getElementById("f-filter-field");
       fieldSel.addEventListener("change", () => {
@@ -7313,6 +7387,7 @@ const IDB_NAME = "FieldPunchlistDB";
         </div>
       `;
       document.getElementById("pl-modal").classList.add("show");
+      document.getElementById("pl-modal").style.pointerEvents = "";
       if (typeof bindPunchlistLineChips === 'function') bindPunchlistLineChips();
       if (typeof pinPlModalBar === 'function') pinPlModalBar();
       const delBtn = document.getElementById("btn-delete-item");
@@ -7529,6 +7604,25 @@ const IDB_NAME = "FieldPunchlistDB";
       const overlay = document.getElementById("pl-modal");
       const sheet = document.getElementById("modal-sheet");
       overlay.classList.remove("show");
+      overlay.style.pointerEvents = "none";
+      // The real bug: showPlActionBars() (keyboard-avoidance — keeps the
+      // Save/Cancel bar usable while typing, above the keyboard) sets
+      // pointer-events/visibility/opacity/display directly as *inline*
+      // !important styles on .pl-item-bar. An inline !important beats
+      // any ancestor's CSS, .show included — so once that ran, this bar
+      // stayed fully interactive and visible even after the modal
+      // "closed", sitting on top of whatever was underneath (e.g. the
+      // "+" FAB), silently re-saving the last item on the next tap
+      // there instead of opening a blank one. Clearing these specific
+      // inline overrides on close removes the stale interactive layer;
+      // showPlActionBars() re-applies them correctly next time a form
+      // actually opens.
+      document.querySelectorAll('#pl-modal .btn-row, #pl-modal .pl-item-bar').forEach((bar) => {
+        bar.style.removeProperty('display');
+        bar.style.removeProperty('visibility');
+        bar.style.removeProperty('opacity');
+        bar.style.removeProperty('pointer-events');
+      });
       if (sheet) {
         sheet.style.transform = "";
         sheet.classList.remove("dragging");
@@ -7631,6 +7725,7 @@ const IDB_NAME = "FieldPunchlistDB";
         </div>
       `;
       document.getElementById("pl-modal").classList.add("show");
+      document.getElementById("pl-modal").style.pointerEvents = "";
       document.querySelectorAll("#modal-body [data-job]").forEach(btn => {
         btn.addEventListener("click", (e) => {
           e.preventDefault();
@@ -7935,97 +8030,21 @@ const IDB_NAME = "FieldPunchlistDB";
       throw lastErr || new Error('Could not load ' + fileName);
     }
     async function getStoredTemplateBuffer() {
-      return loadWorkbookTemplate('Punchlist-Template.xlsx', 'templateXlsx');
+      // Filename and cache key both changed together deliberately: the
+      // cache key must change too, or a technician who already has the
+      // old template's buffer cached in IndexedDB would keep using it
+      // forever — loadWorkbookTemplate checks its IndexedDB cache before
+      // ever re-fetching, so an unchanged key would silently mask this
+      // update for anyone who's already exported a punchlist before.
+      // Cache key bumped again (V2 -> V3): the file's content changed here
+      // too (logo added back, this time authored by ExcelJS's own writer
+      // so it round-trips correctly) — same reasoning as the V1->V2 bump
+      // above, anyone who already cached V2's buffer needs to re-fetch,
+      // not silently keep serving the no-logo version forever.
+      return loadWorkbookTemplate('Punchlist_Template_ExcelJS.xlsx', 'punchlistTemplateXlsxV3');
     }
     async function getTimecardTemplateBuffer() {
       return loadWorkbookTemplate('timecard-template.xlsx', 'timecardTemplateXlsx');
-    }
-
-    function loadScriptOnce(src) {
-      return new Promise((resolve, reject) => {
-        const existing = document.querySelector('script[data-lib-src="' + src + '"]');
-        if (existing) {
-          if (existing.getAttribute('data-loaded') === '1') return resolve();
-          existing.addEventListener('load', () => resolve());
-          existing.addEventListener('error', () => reject(new Error('Failed ' + src)));
-          return;
-        }
-        const s = document.createElement('script');
-        s.src = src;
-        s.async = true;
-        s.setAttribute('data-lib-src', src);
-        s.onload = () => { s.setAttribute('data-loaded', '1'); resolve(); };
-        s.onerror = () => reject(new Error('Failed ' + src));
-        document.head.appendChild(s);
-      });
-    }
-
-
-    const EXPORT_LIB_BTNS = ['tcExportContinue','saveSheetXlsx','plExportXlsx'];
-    function excelLibsReady() { return typeof ExcelJS !== 'undefined'; }
-    function setExportButtonsReady(ready) {
-      EXPORT_LIB_BTNS.forEach((id) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.disabled = !ready;
-        el.setAttribute('aria-disabled', ready ? 'false' : 'true');
-        el.classList.toggle('is-waiting-lib', !ready);
-        if (!el.dataset.readyLabel) el.dataset.readyLabel = el.textContent;
-        if (!ready) el.textContent = 'Loading Excel…';
-        else el.textContent = el.dataset.readyLabel;
-      });
-    }
-    let excelWarm;
-    function warmExcelLibs() {
-      if (excelLibsReady()) { setExportButtonsReady(true); return Promise.resolve(true); }
-      if (excelWarm) return excelWarm;
-      setExportButtonsReady(false);
-      excelWarm = ensureExcelLibs().then(() => {
-        const ok = excelLibsReady();
-        setExportButtonsReady(ok);
-        return ok;
-      }).catch((err) => {
-        console.warn(err);
-        setExportButtonsReady(false);
-        EXPORT_LIB_BTNS.forEach((id) => {
-          const el = document.getElementById(id);
-          if (el) el.textContent = 'Excel unavailable';
-        });
-        return false;
-      });
-      return excelWarm;
-    }
-    async function ensureExportLibs() {
-      return ensureExcelLibs();
-    }
-    async function ensureExcelLibs() {
-      if (typeof ExcelJS === 'undefined') {
-        const urls = [
-          'exceljs.min.js',
-          'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js'
-        ];
-        for (const url of urls) {
-          try {
-            await loadScriptOnce(url);
-            if (typeof ExcelJS !== 'undefined') break;
-          } catch (e) {}
-        }
-      }
-      if (typeof window.jspdf === 'undefined') {
-        const pdfUrls = [
-          'jspdf.umd.min.js',
-          'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js'
-        ];
-        for (const url of pdfUrls) {
-          try {
-            await loadScriptOnce(url);
-            if (typeof window.jspdf !== 'undefined') break;
-          } catch (e) {}
-        }
-        if (typeof window.jspdf !== 'undefined' && typeof window.jspdf.jsPDF.API.autoTable === 'undefined') {
-          try { await loadScriptOnce('jspdf.plugin.autotable.min.js'); } catch (e) {}
-        }
-      }
     }
 
     async function downloadBlob(blob, filename) {
@@ -8264,6 +8283,167 @@ const IDB_NAME = "FieldPunchlistDB";
       toast('Punchlist PDF downloaded');
     }
 
+    // Findings-style export — same visual language as the Inspection PDF's
+    // "Primary findings" cards (bold title, color chip, meta line, wrapped
+    // notes, inline photo), just fed from Punchlist items instead of
+    // inspection findings. Intentionally NOT sharing code with
+    // generatePDFReport's card renderer: that renderer is a function
+    // nested inside generatePDFReport itself, not reachable from here
+    // (punchlistModule is a separate closure) — this is a fresh,
+    // self-contained implementation that matches its output, not a
+    // refactor of shared code.
+    async function exportPunchlistFindingsPdf() {
+      try { await ensureExcelLibs(); } catch (e) {}
+      if (typeof window.jspdf === 'undefined') {
+        toast('PDF library not available');
+        return;
+      }
+      const rawItems = (typeof getItems === 'function' ? getItems() : []) || [];
+      const jobKey = data.currentJob || '';
+      const jobName = (typeof punchlistDisplayName === 'function') ? punchlistDisplayName(jobKey) : (jobKey || 'Punchlist');
+      const jobs = (typeof loadJobs === 'function') ? loadJobs() : [];
+      const job = jobs.find(j => j && (j.id === jobKey || (typeof jobDisplayName === 'function' && jobDisplayName(j) === jobName) || j.customer === jobName)) || null;
+      const customer = (job && job.customer) || (isInternalId(jobName) ? 'Customer' : jobName) || 'Customer';
+      const site = (job && job.site) || '';
+      const tech = (job && job.technician) || '';
+      const dateRange = (typeof formatJobDateRange === 'function' && job) ? formatJobDateRange(job) : '';
+
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
+      const W = doc.internal.pageSize.getWidth();
+      const H = doc.internal.pageSize.getHeight();
+      const L = 14;
+      const R = W - 14;
+      const usable = R - L;
+      let y = 14;
+
+      function runningHeader() {
+        doc.setFillColor(20, 20, 24);
+        doc.rect(0, 0, W, 10, 'F');
+        doc.setFillColor(212, 34, 59);
+        doc.rect(0, 0, 3.2, 10, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8);
+        doc.text('LeMatic  ·  Field Service Report', 8, 6.6);
+        doc.setFont('helvetica', 'normal');
+        const right = (customer + (dateRange ? '  ·  ' + dateRange : '')).substring(0, 48);
+        doc.text(right, W - 8, 6.6, { align: 'right' });
+      }
+      function runningFooter() {
+        const page = doc.internal.getCurrentPageInfo().pageNumber;
+        doc.setFillColor(244, 245, 247);
+        doc.rect(0, H - 12, W, 12, 'F');
+        doc.setTextColor(92, 101, 112);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.text('Punchlist findings  ·  Customer copy', 8, H - 5);
+        doc.text('Page ' + page, W - 8, H - 5, { align: 'right' });
+      }
+      function paintChrome() { runningHeader(); runningFooter(); }
+      function newPage() { doc.addPage(); paintChrome(); y = 16; }
+      function need(h) { if (y + h > H - 16) newPage(); }
+      function wrap(text, width, fontSize) {
+        doc.setFontSize(fontSize || 9);
+        return doc.splitTextToSize(String(text || ''), width);
+      }
+
+      paintChrome();
+
+      // Hero — same block style as the inspection report's opener, so this
+      // reads as the same family of document.
+      doc.setFillColor(20, 20, 24);
+      doc.rect(L, y, usable, 30, 'F');
+      doc.setTextColor(243, 179, 188);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.text('FIELD SERVICE — PUNCHLIST FINDINGS', L + 6, y + 8);
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(15);
+      doc.text(String(customer).substring(0, 46), L + 6, y + 17);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(208, 213, 219);
+      const sub = [site, dateRange, tech].filter(Boolean).join('  ·  ');
+      if (sub) doc.text(sub.substring(0, 90), L + 6, y + 24);
+      try {
+        if (typeof LEMATIC_LOGO_JPG === 'string' && LEMATIC_LOGO_JPG) {
+          doc.setFillColor(255, 255, 255);
+          doc.roundedRect(R - 34, y + 6, 30, 10, 1, 1, 'F');
+          doc.addImage('data:image/jpeg;base64,' + LEMATIC_LOGO_JPG, 'JPEG', R - 32.6, y + 6.8, 27.2, 8.4);
+        }
+      } catch (e) {}
+      y += 38;
+
+      function priorityChip(label, x, yy) {
+        const v = String(label || '').toLowerCase();
+        const bg = v === 'high' ? [253, 236, 234] : v === 'low' ? [235, 245, 238] : [255, 246, 217];
+        const fg = v === 'high' ? [198, 40, 40] : v === 'low' ? [46, 125, 50] : [184, 134, 11];
+        doc.setFillColor(bg[0], bg[1], bg[2]);
+        doc.roundedRect(x, yy - 4, 18, 6, 1, 1, 'F');
+        doc.setTextColor(fg[0], fg[1], fg[2]);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(6.5);
+        doc.text(String(label || 'Normal').toUpperCase().substring(0, 9), x + 9, yy, { align: 'center' });
+      }
+
+      function findingCard(item) {
+        const noteParts = [];
+        if (item.action) noteParts.push('Action: ' + item.action);
+        if (item.comments) noteParts.push(item.comments);
+        const bodyLines = wrap(noteParts.join('\n') || 'No notes recorded.', usable - 10, 9);
+        const src = item.photo || null;
+        const photoH = src ? 48 : 0;
+        const h = 16 + bodyLines.length * 4.2 + photoH + (src ? 8 : 4);
+        need(Math.min(h, 70));
+        doc.setDrawColor(228, 230, 234);
+        doc.setFillColor(255, 255, 255);
+        doc.rect(L, y, usable, h, 'FD');
+        doc.setFillColor(198, 40, 40);
+        doc.rect(L, y, 1.8, h, 'F');
+        doc.setTextColor(20, 20, 24);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.text(String(item.description || 'Untitled item').substring(0, 62), L + 5, y + 7);
+        priorityChip(item.priority, R - 24, y + 7);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.5);
+        doc.setTextColor(92, 101, 112);
+        const meta = [item.location, item.department, item.status].filter(Boolean).join('  ·  ');
+        doc.text(meta.substring(0, 90), L + 5, y + 13);
+        doc.setTextColor(20, 20, 24);
+        doc.setFontSize(9);
+        let yy = y + 19;
+        bodyLines.forEach(line => { doc.text(line, L + 5, yy); yy += 4.2; });
+        if (src) {
+          try { doc.addImage(src, 'JPEG', L + 5, yy, 70, 42); }
+          catch (e) { try { doc.addImage(src, 'PNG', L + 5, yy, 70, 42); } catch (e2) {} }
+        }
+        y += h + 4;
+      }
+
+      // High priority first — same "most important problem first" logic
+      // as the inspection report's Poor/Fail ranking, adapted to
+      // Punchlist's own priority field. Every item appears, not just
+      // photographed ones, since a typed note without a photo is still a
+      // real finding worth putting in the trip report.
+      const rank = (p) => { const v = String(p || '').toLowerCase(); return v === 'high' ? 2 : v === 'low' ? 0 : 1; };
+      const items = rawItems.slice().sort((a, b) => rank(b.priority) - rank(a.priority));
+
+      if (!items.length) {
+        doc.setTextColor(92, 101, 112);
+        doc.setFontSize(9);
+        doc.text('No punchlist items to report.', L, y);
+      } else {
+        items.forEach(findingCard);
+      }
+
+      const safeName = String(jobName).replace(/[\\/:*?"<>|]/g, '-').trim() || 'Punchlist';
+      doc.save(safeName + ' Findings.pdf');
+      toast('Findings PDF downloaded');
+    }
+
 
     
     
@@ -8312,7 +8492,11 @@ const IDB_NAME = "FieldPunchlistDB";
         row.getCell(8).value = status;
         for (let c = 2; c <= 7; c++) {
           const cell = row.getCell(c);
-          cell.alignment = Object.assign({}, cell.alignment || {}, { wrapText: true, vertical: "top" });
+          // Vertical center, matching the template's own default — this
+          // used to force top-alignment specifically for filled rows,
+          // which is what made wrapped multi-line text look pinned to the
+          // top of a tall row instead of sitting centered in it.
+          cell.alignment = Object.assign({}, cell.alignment || {}, { wrapText: true, vertical: "middle" });
         }
         const text = [item.description, item.action, item.comments].join(" ");
         const lines = Math.max(1, Math.ceil(String(text).length / 42));
@@ -8411,6 +8595,14 @@ const IDB_NAME = "FieldPunchlistDB";
     if (plExportPdf) plExportPdf.addEventListener('click', () => {
       closePlExportSheet();
       exportPunchlistPdf();
+    });
+    const plExportFindings = document.getElementById('plExportFindings');
+    if (plExportFindings) plExportFindings.addEventListener('click', () => {
+      closePlExportSheet();
+      exportPunchlistFindingsPdf().catch(err => {
+        console.warn(err);
+        toast('Could not build Findings PDF');
+      });
     });
     const plExportXlsx = document.getElementById('plExportXlsx');
     if (plExportXlsx) plExportXlsx.addEventListener('click', () => {
@@ -9930,7 +10122,7 @@ function tcRenderEntryList(listEl, offset) {
     }
 
     function bindTimeCards() {
-      const tile = document.getElementById('homeTileTime');
+      const tile = document.getElementById('navHomeTime');
       if (tile && tile.dataset.tcBound !== '1') {
         tile.dataset.tcBound = '1';
         tile.addEventListener('click', openTimeCards);
@@ -10125,6 +10317,20 @@ function tcRenderEntryList(listEl, offset) {
       if (typeof showPlActionBars === 'function') showPlActionBars();
     }
     function showPlActionBars() {
+      // Root-cause guard: this is reachable from a *global*
+      // document-level focusout listener that fires on any element
+      // anywhere losing focus, with no check that #pl-modal is even
+      // open — so it could re-enable this bar's inline
+      // pointer-events/visibility/opacity/display (all set !important,
+      // which beats the modal's own closed-state CSS) shortly after the
+      // modal was legitimately closed. That left a fully interactive,
+      // invisible "Save" button sitting on screen wherever the bar is
+      // fixed-positioned to, silently re-saving whatever item was last
+      // open on the next unrelated tap there (e.g. the "+" FAB).
+      // Bailing out here when the modal isn't actually open removes the
+      // path entirely rather than racing to clean up after it.
+      const modal = document.getElementById('pl-modal');
+      if (!modal || !modal.classList.contains('show')) return;
       const hide = document.body.classList.contains('kb-open');
       document.querySelectorAll('#pl-modal .btn-row, #pl-modal .pl-item-bar').forEach((bar) => {
         bar.style.setProperty('display', hide ? 'none' : 'flex', 'important');
