@@ -129,12 +129,23 @@
       left: 0;
       right: 0;
       z-index: 110;
-      height: calc(69px + env(safe-area-inset-top, 0px));
-      min-height: calc(69px + env(safe-area-inset-top, 0px));
-      max-height: calc(69px + env(safe-area-inset-top, 0px));
+      /* +8px height and matching 8px top padding, together, push the
+         header's content (pill logo, round buttons) down 8px to clear
+         a system overlay that was blurring them — while the header's
+         own bottom edge also moves down 8px to match, so its total
+         footprint grows instead of just shifting content within the
+         same box. That's read dynamically by measureHeaderHeight()
+         into --header-h, which every screen's own top-clearance is
+         built from (min-heights, padding-top, modal max-heights) — so
+         growing the real height here is what keeps this from covering
+         anything below, rather than needing each of those updated by
+         hand. See padding below for how the 8px is actually spent. */
+      height: calc(77px + env(safe-area-inset-top, 0px));
+      min-height: calc(77px + env(safe-area-inset-top, 0px));
+      max-height: calc(77px + env(safe-area-inset-top, 0px));
       background: #000000;
       color: var(--text);
-      padding: 0 16px;
+      padding: 8px 16px 0;
       display: flex; align-items: center; justify-content: space-between;
       border-bottom: none;
       box-shadow: none;
