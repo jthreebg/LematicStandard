@@ -216,13 +216,10 @@
     .home-bottom {
       margin-top: auto;
       width: 100%;
-      /* Clears the glass dock, which sits flush against the true screen
-         edge (bottom: 0) on every platform. Dock height is fixed at
-         ~112px regardless of platform/safe-area now (a pure reposition,
-         not a resize), so this clearance is a plain constant too —
-         112px plus a small buffer so content never touches the dock
-         directly. */
-      padding: 0 0 132px;
+      /* Clears the glass dock: ~112px dock height + its 20px resting
+         gap from the screen edge + a small buffer so content never
+         touches the dock directly. */
+      padding: 0 0 152px;
     }
     body.on-home .section-progress {
       display: none !important;
@@ -6989,10 +6986,12 @@
       left: 16px; right: 16px;
       /* Small fixed gap from the true screen edge, on every platform —
          fully flush (bottom: 0) turned out too far down in practice.
-         This is a modest middle ground between that and the original
+         20px is a middle ground between that and the original
          full-safe-area gap it floated at before (~33px on notched
-         iPhones, which read as "too high"). */
-      bottom: 10px;
+         iPhones, which read as "too high") — also matches what
+         fixHomeDockPosition() re-asserts after navigating back to Home,
+         where iOS Safari can otherwise leave this stale and lower. */
+      bottom: 20px;
       z-index: 105;
       display: flex;
       border-radius: 34px;

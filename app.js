@@ -459,6 +459,33 @@ const ICO = {
     const navHistory = [];
     let navGoingBack = false;
 
+    // iOS Safari (confirmed on iPhone 16 Pro) can leave the bottom dock's
+    // position:fixed layout stale after visiting another screen — most
+    // reliably reproduced by tapping a screen's own Back arrow and then
+    // the header Home icon in sequence — landing it noticeably lower
+    // than its 20px resting gap, closer to the very edge. Not something
+    // headless testing can reproduce (no real device navigation quirks
+    // to trigger it), and not fixable by changing the CSS value alone,
+    // since the browser's own cached layout is what's stale, not the
+    // rule. An immediate reflow alone wasn't sufficient — Safari's own
+    // internal viewport settling can still land after it — so this also
+    // re-asserts the correct position a couple of frames later, once
+    // Safari's own layout pass has actually finished, and explicitly
+    // via inline style rather than trusting the reflow to have worked.
+    function fixHomeDockPosition() {
+      const dock = document.querySelector('.home-bottom-nav');
+      if (!dock) return;
+      const reassert = () => {
+        dock.style.display = 'none';
+        // eslint-disable-next-line no-unused-expressions
+        dock.offsetHeight; // force layout flush before restoring
+        dock.style.display = '';
+        dock.style.bottom = '20px';
+      };
+      reassert();
+      requestAnimationFrame(() => requestAnimationFrame(reassert));
+    }
+
     function showScreen(id) {
       const current = document.querySelector('.screen.active');
       const currentId = current ? current.id : '';
@@ -470,25 +497,7 @@ const ICO = {
       document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
       const screenEl = document.getElementById(id);
       if (screenEl) screenEl.classList.add('active');
-      if (id === 'screenHome') {
-        // iOS Safari can leave a position:fixed element (the bottom dock
-        // here) mispositioned — commonly sitting lower than its CSS says
-        // it should — after the on-screen keyboard has opened and closed
-        // during the visit to whatever screen came before this, since
-        // Punchlist has text fields that can trigger it. Not something
-        // headless testing can reproduce (no real keyboard), and not
-        // fixable by adjusting the CSS value itself, since the browser's
-        // own fixed-position layout is what's stale. Forcing a reflow —
-        // toggling display off and back on — makes it recompute against
-        // the actual current viewport instead of a stale one.
-        const dock = document.querySelector('.home-bottom-nav');
-        if (dock) {
-          dock.style.display = 'none';
-          // eslint-disable-next-line no-unused-expressions
-          dock.offsetHeight; // force layout flush before restoring
-          dock.style.display = '';
-        }
-      }
+      if (id === 'screenHome') fixHomeDockPosition();
       if (id !== 'screenPunchlist') {
         const overlay = document.getElementById('pl-modal');
         if (overlay && overlay.classList.contains('show')) {
@@ -7527,7 +7536,12 @@ const IDB_NAME = "FieldPunchlistDB";
       function paint() {
         row.innerHTML = lines.map(line => {
           const serial = serialOf(line);
-          const label = serial ? (line + ' · ' + serial) : line;
+          // Label reads "Line 1", "Line 2", etc. — the stored value
+          // (data-line / f-line's hidden input) stays the bare number
+          // it always was, so this is display-only and doesn't touch
+          // existing saved items, the PDF export's line-grouping, or
+          // anything else that reads item.line.
+          const label = serial ? ('Line ' + line + ' · ' + serial) : ('Line ' + line);
           return '<button type="button" class="chip line-chip' + (line === selected ? ' on' : '') + '" data-line="' + line + '" data-serial="' + serial.replace(/"/g,'&quot;') + '">' + label + '</button>';
         }).join('');
         row.querySelectorAll('.line-chip').forEach(btn => {
