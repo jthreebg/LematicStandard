@@ -15,6 +15,13 @@
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />
+  <!-- macOS Safari's "Add to Dock" (Ventura+) renders a noticeably
+       larger, higher-res icon than iOS's home screen and has been known
+       to fall back to a generic page-snapshot icon when only a 180x180
+       apple-touch-icon is offered. Giving it this larger declared size
+       (reusing the existing 512x512 asset, no new file needed) gives it
+       a properly crisp source to pick from instead. -->
+  <link rel="apple-touch-icon" sizes="512x512" href="icon-512.png" />
   <title>LeMatic Field Service</title>
     <script>
     (function(){try{
@@ -26,7 +33,7 @@
       if(light)document.documentElement.classList.add('theme-light');
     }catch(e){}})();
   </script>
-  <link rel="stylesheet" href="app.css?v=110" />
+  <link rel="stylesheet" href="app.css?v=112" />
   
 
 
@@ -1110,8 +1117,8 @@
   
   
   
-  <script src="qrcode.min.js?v=110" defer></script>
-  <script src="templates.js?v=110" defer></script>
-  <script src="app.js?v=110" defer></script>
+  <script src="qrcode.min.js?v=112" defer></script>
+  <script src="templates.js?v=112" defer></script>
+  <script src="app.js?v=112" defer></script>
 </body>
 </html>

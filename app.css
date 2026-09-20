@@ -216,11 +216,13 @@
     .home-bottom {
       margin-top: auto;
       width: 100%;
-      /* Clears the floating glass dock: bar height (~130px, 6px shorter
-         than before via reduced dock padding, not the icon buttons' own
-         padding) plus its near-zero floating gap from the screen edge,
-         plus a small buffer so content never sits under it. */
-      padding: 0 0 calc(133px + var(--safe-bottom));
+      /* Clears the glass dock, which sits flush against the true screen
+         edge (bottom: 0) on every platform. Dock height is fixed at
+         ~112px regardless of platform/safe-area now (a pure reposition,
+         not a resize), so this clearance is a plain constant too —
+         112px plus a small buffer so content never touches the dock
+         directly. */
+      padding: 0 0 132px;
     }
     body.on-home .section-progress {
       display: none !important;
@@ -6985,7 +6987,15 @@
     .home-bottom-nav {
       position: fixed;
       left: 16px; right: 16px;
-      bottom: max(0px, calc(var(--safe-bottom) - 1px));
+      /* Flush to the true screen edge on every platform — was floating
+         a full safe-area's worth above it (~33px on notched/home-
+         indicator iPhones), which read as "too high". This is a pure
+         reposition, not a resize: dock height, icon size, label size,
+         and internal padding are all unchanged from before — only the
+         bottom offset moved, to 0. On platforms with no safe area
+         (Android, Windows, macOS) env() resolves to 0px, so this was
+         already flush there. */
+      bottom: 0;
       z-index: 105;
       display: flex;
       border-radius: 34px;
