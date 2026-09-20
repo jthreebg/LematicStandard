@@ -470,6 +470,25 @@ const ICO = {
       document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
       const screenEl = document.getElementById(id);
       if (screenEl) screenEl.classList.add('active');
+      if (id === 'screenHome') {
+        // iOS Safari can leave a position:fixed element (the bottom dock
+        // here) mispositioned — commonly sitting lower than its CSS says
+        // it should — after the on-screen keyboard has opened and closed
+        // during the visit to whatever screen came before this, since
+        // Punchlist has text fields that can trigger it. Not something
+        // headless testing can reproduce (no real keyboard), and not
+        // fixable by adjusting the CSS value itself, since the browser's
+        // own fixed-position layout is what's stale. Forcing a reflow —
+        // toggling display off and back on — makes it recompute against
+        // the actual current viewport instead of a stale one.
+        const dock = document.querySelector('.home-bottom-nav');
+        if (dock) {
+          dock.style.display = 'none';
+          // eslint-disable-next-line no-unused-expressions
+          dock.offsetHeight; // force layout flush before restoring
+          dock.style.display = '';
+        }
+      }
       if (id !== 'screenPunchlist') {
         const overlay = document.getElementById('pl-modal');
         if (overlay && overlay.classList.contains('show')) {
@@ -8423,20 +8442,55 @@ const IDB_NAME = "FieldPunchlistDB";
         y += h + 4;
       }
 
-      // High priority first — same "most important problem first" logic
-      // as the inspection report's Poor/Fail ranking, adapted to
-      // Punchlist's own priority field. Every item appears, not just
-      // photographed ones, since a typed note without a photo is still a
-      // real finding worth putting in the trip report.
-      const rank = (p) => { const v = String(p || '').toLowerCase(); return v === 'high' ? 2 : v === 'low' ? 0 : 1; };
-      const items = rawItems.slice().sort((a, b) => rank(b.priority) - rank(a.priority));
+      function lineHeader(label) {
+        need(12);
+        doc.setFillColor(241, 242, 245);
+        doc.rect(L, y, usable, 8, 'F');
+        doc.setFillColor(198, 40, 40);
+        doc.rect(L, y, 1.8, 8, 'F');
+        doc.setTextColor(20, 20, 24);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        doc.text(String(label).toUpperCase().substring(0, 70), L + 5, y + 5.5);
+        y += 8 + 3;
+      }
 
-      if (!items.length) {
+      // High priority first within each line — same "most important
+      // problem first" logic as the inspection report's Poor/Fail
+      // ranking, adapted to Punchlist's own priority field. Every item
+      // appears, not just photographed ones, since a typed note without
+      // a photo is still a real finding worth putting in the trip
+      // report.
+      const rank = (p) => { const v = String(p || '').toLowerCase(); return v === 'high' ? 2 : v === 'low' ? 0 : 1; };
+
+      // Grouped by line — a tech scanning the report for "what's left on
+      // Line 9" shouldn't have to read every card on the page. Items
+      // with no line entered fall into their own group at the end
+      // rather than being scattered in among the labeled ones.
+      const NO_LINE = 'No line specified';
+      const groups = new Map();
+      rawItems.forEach(item => {
+        const key = String(item.line || '').trim() || NO_LINE;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(item);
+      });
+      const lineKeys = Array.from(groups.keys())
+        .filter(k => k !== NO_LINE)
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+      if (groups.has(NO_LINE)) lineKeys.push(NO_LINE);
+
+      if (!rawItems.length) {
         doc.setTextColor(92, 101, 112);
         doc.setFontSize(9);
         doc.text('No punchlist items to report.', L, y);
       } else {
-        items.forEach(findingCard);
+        lineKeys.forEach(key => {
+          lineHeader(key);
+          groups.get(key)
+            .slice()
+            .sort((a, b) => rank(b.priority) - rank(a.priority))
+            .forEach(findingCard);
+        });
       }
 
       const safeName = String(jobName).replace(/[\\/:*?"<>|]/g, '-').trim() || 'Punchlist';

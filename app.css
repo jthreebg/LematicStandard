@@ -6987,15 +6987,12 @@
     .home-bottom-nav {
       position: fixed;
       left: 16px; right: 16px;
-      /* Flush to the true screen edge on every platform — was floating
-         a full safe-area's worth above it (~33px on notched/home-
-         indicator iPhones), which read as "too high". This is a pure
-         reposition, not a resize: dock height, icon size, label size,
-         and internal padding are all unchanged from before — only the
-         bottom offset moved, to 0. On platforms with no safe area
-         (Android, Windows, macOS) env() resolves to 0px, so this was
-         already flush there. */
-      bottom: 0;
+      /* Small fixed gap from the true screen edge, on every platform —
+         fully flush (bottom: 0) turned out too far down in practice.
+         This is a modest middle ground between that and the original
+         full-safe-area gap it floated at before (~33px on notched
+         iPhones, which read as "too high"). */
+      bottom: 10px;
       z-index: 105;
       display: flex;
       border-radius: 34px;
