@@ -2978,8 +2978,20 @@ const ICO = {
             return;
           }
           if (window.swipeOpenHost && window.swipeOpenHost !== host) swipeCloseAll(host);
+          // Pointer capture is deliberately NOT taken here anymore — see
+          // onMove, where it's only taken once a horizontal swipe is
+          // actually confirmed. Capturing unconditionally on every
+          // pointerdown (including a plain click with no movement at
+          // all) retargets the browser's synthesized "click" event to
+          // this host element instead of the original nested target —
+          // per spec, but it meant [data-action="open"]'s own click
+          // listener, and every other nested click handler on every
+          // swipeable row app-wide, never fired at all with mouse
+          // input (touch was unaffected, which is why this only showed
+          // up on desktop/Windows, never in phone testing). A plain
+          // click/tap now never captures the pointer, so the native
+          // click reaches its real target normally.
           pid = e.pointerId;
-          try { host.setPointerCapture(pid); } catch (_) {}
           startX = lastX = e.clientX;
           startY = e.clientY;
           axis = null;
@@ -2998,10 +3010,13 @@ const ICO = {
             axis = (Math.abs(dx) > Math.abs(dy) * 1.2) ? 'h' : 'v';
             if (axis === 'v') {
               tracking = false;
-              try { host.releasePointerCapture(pid); } catch (_) {}
               pid = null;
               return;
             }
+            // Horizontal swipe confirmed — capture now, not before, so
+            // the drag keeps tracking correctly even if the pointer
+            // moves outside the row's own bounds.
+            try { host.setPointerCapture(pid); } catch (_) {}
           }
           if (axis !== 'h') return;
           e.preventDefault();
