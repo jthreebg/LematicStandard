@@ -3486,6 +3486,17 @@
       position: relative;
     }
     #screenPunchlist .pl-item:active { filter: brightness(1.06); }
+    /* Created date, kept quiet in the corner for reference rather than
+       as a field in the main content — no longer editable on the
+       sheet, just a passive stamp on the card itself. */
+    #screenPunchlist .pl-item .pl-created-tag {
+      position: absolute;
+      top: 10px; right: 14px;
+      font-size: 0.66rem;
+      color: var(--muted-2, var(--muted));
+      opacity: 0.6;
+      pointer-events: none;
+    }
     #screenPunchlist .pl-item.priority-high {
       border-color: transparent;
       background:
@@ -3656,6 +3667,25 @@
     }
     #fab-add svg { width: 22px; height: 22px; display: block; }
     #fab-add:active { transform: scale(0.92); filter: brightness(0.94); background: #d5dce2; }
+    /* Same visual treatment as #fab-add, own dedicated element for
+       this one screen — see the HTML comment above this button for why. */
+    .pf-add-fab {
+      position: fixed;
+      bottom: calc(16px + var(--safe-bottom));
+      right: 16px;
+      width: 50px; height: 50px;
+      border-radius: 50%;
+      background: #e8eef2;
+      color: #0d0d0f;
+      border: none;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.85);
+      cursor: pointer;
+      display: flex;
+      align-items: center; justify-content: center;
+      z-index: 200;
+    }
+    .pf-add-fab svg { width: 22px; height: 22px; display: block; }
+    .pf-add-fab:active { transform: scale(0.92); filter: brightness(0.94); background: #d5dce2; }
     #pl-modal.modal-overlay {
       position: fixed; inset: 0;
       background: rgba(0,0,0,0.72);
@@ -6171,6 +6201,19 @@
       justify-content: center;
     }
     #plStartSheet.modal-overlay.show { display: flex; }
+    /* Phase 6 diagnostic modal — same show/hide convention every other
+       modal-overlay on this screen already uses (ID-scoped display:none
+       by default, .show sets display:flex). */
+    #punchlistDiagModal.modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.72);
+      z-index: 330;
+      display: none;
+      align-items: flex-end;
+      justify-content: center;
+    }
+    #punchlistDiagModal.modal-overlay.show { display: flex; }
+    #punchlistDiagSheet { width: 100%; max-width: 560px; max-height: 80vh; overflow-y: auto; }
     #plStartSheet .machine-sheet {
       width: 100%;
       max-width: 520px;
@@ -6843,6 +6886,25 @@
     #screenPartsList .pl-item .title {
       font-weight: 600; letter-spacing: -0.01em; font-size: 15px; line-height: 1.35;
     }
+    /* .list-item-main had no flex-grow of its own — fine with just
+       two children (thumb + rail), but with the thumb now a sibling
+       instead of the row's only other content, main had nothing
+       telling it to claim the space between them and was shrinking to
+       its content's minimum width, wrapping the whole text block onto
+       its own line below the thumb instead of sitting beside it.
+       flex-wrap: wrap on the row itself (inherited from Punchlist's
+       own two-child .pl-item, where it never mattered) compounds this
+       with three children and a long enough title — the row wraps as
+       a whole instead of just letting the title text itself wrap
+       within .list-item-main, so it's overridden to nowrap here;
+       min-width: 0 is what actually lets the text wrap internally. */
+    #screenPartsForm .pl-item {
+      flex-wrap: nowrap;
+    }
+    #screenPartsForm .pl-item .list-item-main {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
     #screenPartsForm .pl-item .sub,
     #screenPartsList .pl-item .sub {
       font-size: 0.85rem; color: var(--muted); margin-top: 3px; line-height: 1.35;
@@ -6850,6 +6912,70 @@
     #screenPartsForm .pl-item .action-line,
     #screenPartsList .pl-item .action-line {
       font-size: 0.85rem; color: var(--text); margin-top: 6px; opacity: 0.9;
+    }
+    /* Notes on an individual part row specifically — not the request
+       summary line on the outer list screen, which shares this same
+       .action-line class for an unrelated "N parts · date" caption
+       that should stay as it was. */
+    #screenPartsForm .pl-item .list-item-main > .action-line {
+      color: var(--info);
+    }
+    /* Shows where an auto-generated line came from — a punchlist
+       finding or inspection item — distinct from the "->" notes line
+       above so it's clear this wasn't typed here directly. */
+    #screenPartsForm .pl-item .source-line {
+      font-size: 0.8rem; color: var(--info); margin-top: 4px;
+      display: flex; align-items: center; gap: 4px;
+    }
+    #screenPartsForm .pl-item .source-line svg { flex-shrink: 0; width: 11px; height: 11px; }
+    /* Right-side column — Urgent pill on top, thumb button directly
+       below it, both right-aligned. Same row as the title/details on
+       the left (.pl-item is already a flex row with a 10px/12px gap;
+       this rail is just its second child now instead of the thumb
+       alone). */
+    #screenPartsForm .pl-item .pf-right-rail {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    /* .badge-urgent's own margin-left: 6px was for sitting inline
+       next to the title text — not needed now that it's stacked in
+       its own column, so it's overridden here rather than in the
+       shared class other screens still use inline. */
+    #screenPartsForm .pl-item .pf-rail-urgent { margin-left: 0; }
+    /* Truck icon button — stays at the left edge (horizontal position
+       unchanged), but centers vertically against the row's full
+       height rather than pinning to the top, so it stays centered as
+       the card grows taller with notes/source lines. align-self here
+       overrides just this one child — .list-item-main and the right
+       rail both stay flex-start, only the icon button re-centers. */
+    #screenPartsForm .pl-item .pf-thumb-btn {
+      width: 48px; height: 48px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.08);
+      border: 0.5px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      color: var(--muted);
+      overflow: hidden;
+      align-self: center;
+    }
+    html.theme-light #screenPartsForm .pl-item .pf-thumb-btn { background: rgba(15,23,42,0.05); }
+    /* Back to its original, smaller size — not filling most of the
+       button the way .875 did. */
+    #screenPartsForm .pl-item .pf-thumb-btn svg { width: 22px; height: 22px; }
+    /* Real attached photo — its own element in the right rail, same
+       48px size as the truck button for visual consistency, distinct
+       from it rather than replacing it. */
+    #screenPartsForm .pl-item .pf-rail-photo {
+      width: 48px; height: 48px;
+      border-radius: 10px;
+      border: 0.5px solid var(--border);
+      object-fit: cover;
+      display: block;
+      flex-shrink: 0;
     }
     #screenPartsForm .pl-item .list-item-actions {
       display: grid;
@@ -7045,8 +7171,9 @@
       /* Generous minimum tap target — worked with gloved hands, not just
          tapped with a bare fingertip. */
       min-height: 100px;
+      transition: transform 250ms ease, opacity 250ms ease;
     }
-    .home-bottom-nav-btn:active { opacity: 0.6; }
+    .home-bottom-nav-btn:active { opacity: 0.6; transform: scale(1.15); }
     .home-bottom-nav-label {
       font-size: 10.5px;
       font-weight: 600;

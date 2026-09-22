@@ -33,7 +33,7 @@
       if(light)document.documentElement.classList.add('theme-light');
     }catch(e){}})();
   </script>
-  <link rel="stylesheet" href="app.css?v=119" />
+  <link rel="stylesheet" href="app.css?v=144" />
   
 
 
@@ -322,6 +322,32 @@
         <button type="button" class="btn" id="btnRestoreZip">Restore</button>
       </div>
     </div>
+    <!-- Phase 6 — read-only diagnostic only. No delete/merge/repair
+         actions anywhere here on purpose; this screen reports, it
+         never decides. -->
+    <div class="storage-card" id="diagCard">
+      <div class="storage-kicker">Diagnostics</div>
+      <div class="storage-sub">Check for Punchlist records that may need a closer look. Nothing is changed by running this.</div>
+      <div class="storage-actions">
+        <button type="button" class="btn" id="btnPunchlistDiag">Check Punchlist Data</button>
+      </div>
+      <!-- Phase 7C (C4) — hidden unless a durable-persist failure was
+           recently recorded; see refreshDurablePersistNotice(). -->
+      <div class="storage-sub" id="durablePersistNotice" hidden style="margin-top:10px;">Backup storage write failed recently. Data is still on this phone; export a backup if you need a copy off-device.</div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="punchlistDiagModal" hidden aria-hidden="true">
+    <div class="modal" id="punchlistDiagSheet">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <div class="modal-header">
+        <h2>Punchlists Needing Review</h2>
+        <button type="button" class="header-btn" id="punchlistDiagClose" title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="punchlistDiagBody"></div>
+    </div>
   </div>
 
   <div class="screen" id="screenPunchlist">
@@ -555,7 +581,7 @@
         </div>
         <h2 id="pfHeaderTitle">Parts Request</h2>
       </div>
-      <button type="button" class="btn btn-primary" id="btnAddPartsLine" data-parts-editable>+ Add part</button>
+      <button type="button" class="btn btn-primary" id="btnPartsSend">Send</button>
     </div>
 
     <div class="card job-detail-summary">
@@ -571,10 +597,16 @@
       </div>
     </div>
 
-    <div class="btn-row">
-      <button type="button" class="btn btn-outline" id="btnPartsSave" data-parts-editable>Save</button>
-      <button type="button" class="btn btn-primary" id="btnPartsSend">Send</button>
-    </div>
+    <!-- Round add button, same visual treatment as the app's other
+         floating add buttons (#fab-add on Punchlist/Jobs/Parts list) —
+         its own dedicated element rather than reusing that one
+         directly, since #fab-add's click handler already juggles
+         three other screens' worth of behavior and a fourth purpose
+         would make an already-shared, closure-scoped handler more
+         fragile rather than less. -->
+    <button type="button" class="pf-add-fab" id="btnAddPartsLine" data-parts-editable title="Add part" aria-label="Add part">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+    </button>
   </div>
 
   <!-- PARTS LINE — add/edit one part (mirrors #pl-modal's sliding-sheet pattern) -->
@@ -1117,8 +1149,11 @@
   
   
   
-  <script src="qrcode.min.js?v=119" defer></script>
-  <script src="templates.js?v=119" defer></script>
-  <script src="app.js?v=119" defer></script>
+  
+  
+  
+  <script src="qrcode.min.js?v=144" defer></script>
+  <script src="templates.js?v=144" defer></script>
+  <script src="app.js?v=144" defer></script>
 </body>
 </html>
