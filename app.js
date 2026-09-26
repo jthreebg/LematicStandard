@@ -89,6 +89,7 @@ const ICO = {
       customers: null,
       sites: null,
       serials: null,
+      machines: null,
       ready: false
     };
     let lxDb = null;
@@ -204,6 +205,13 @@ const ICO = {
             const mem = Array.isArray(storeMem.serials) ? storeMem.serials : [];
             return mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
           }
+          case 'machines': {
+            // Phase 15A: new kind, same localStorage-mirror + write-only kv
+            // pattern as customers/sites/serials directly above.
+            const fromLs = lsRead('lx8_machines', []);
+            const mem = Array.isArray(storeMem.machines) ? storeMem.machines : [];
+            return mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+          }
           case 'partsRequests': {
             const fromLs = lsRead('lx8_parts_requests', []);
             const mem = Array.isArray(storeMem.partsRequests) ? storeMem.partsRequests : [];
@@ -295,6 +303,11 @@ const ICO = {
           case 'serials': {
             const ok = lsWrite('lx8_serials', value);
             try { idbSetKv('serials', value); } catch (e) {}
+            return ok;
+          }
+          case 'machines': {
+            const ok = lsWrite('lx8_machines', value);
+            try { idbSetKv('machines', value); } catch (e) {}
             return ok;
           }
           case 'partsRequests': {
@@ -674,6 +687,13 @@ const ICO = {
       currentInspection.currentSectionIndex = currentSectionIndex;
       currentInspection.currentItemIndex = currentItemIndex;
       currentInspection.updatedAt = new Date().toISOString();
+      // Phase 15A: resolve/stamp Customer/Site/Machine ids on every real
+      // save of this inspection (this function is the single save path
+      // used by all three inspection-creation flows and every subsequent
+      // in-progress save) — never on a mere load.
+      if (typeof resolveInspectionEquipmentSnapshot === 'function') {
+        resolveInspectionEquipmentSnapshot(currentInspection, { source: 'inspection-save' });
+      }
       let list = loadInspections();
       const idx = list.findIndex(i => i.id === currentInspection.id);
       if (idx >= 0) list[idx] = currentInspection;
@@ -1343,17 +1363,80 @@ const ICO = {
           '. They\'re marked "Sample". Removing them doesn\'t touch anything you entered.';
       }
     }
+    // Phase 15A / amendment G: after the sample job/inspection are removed
+    // above, remove any Customer/Site/Machine record that was referenced
+    // ONLY by those sample records — never one still referenced by any
+    // real (kept) job, inspection, punchlist item, or parts request line.
+    // Reference-counted against everything still on file, including
+    // punchlist items (read via the module's own exposed backup getter,
+    // since punchlist state lives in a private module scope) — a plain
+    // "was it a sample" flag isn't enough, since real data could
+    // legitimately share a Customer/Site/Machine with the sample job.
+    function cascadeRemoveOrphanedEquipment(removedJobs, removedInspections) {
+      const candidateCustomerIds = new Set();
+      const candidateSiteIds = new Set();
+      const candidateMachineIds = new Set();
+      (removedJobs || []).forEach(j => {
+        if (j && j.customerId) candidateCustomerIds.add(j.customerId);
+        if (j && j.siteId) candidateSiteIds.add(j.siteId);
+        (j && j.equipmentIds || []).forEach(id => id && candidateMachineIds.add(id));
+      });
+      (removedInspections || []).forEach(i => {
+        if (i && i.customerId) candidateCustomerIds.add(i.customerId);
+        if (i && i.siteId) candidateSiteIds.add(i.siteId);
+        if (i && i.equipmentId) candidateMachineIds.add(i.equipmentId);
+      });
+      if (!candidateCustomerIds.size && !candidateSiteIds.size && !candidateMachineIds.size) return;
+
+      const usedCustomerIds = new Set();
+      const usedSiteIds = new Set();
+      const usedMachineIds = new Set();
+      function note(customerId, siteId, machineId) {
+        if (customerId) usedCustomerIds.add(customerId);
+        if (siteId) usedSiteIds.add(siteId);
+        if (machineId) usedMachineIds.add(machineId);
+      }
+      (loadJobs() || []).forEach(j => {
+        note(j && j.customerId, j && j.siteId);
+        (j && j.equipmentIds || []).forEach(id => id && usedMachineIds.add(id));
+      });
+      (loadInspections() || []).forEach(i => note(i && i.customerId, i && i.siteId, i && i.equipmentId));
+      (loadPartsRequests() || []).forEach(r => {
+        note(r && r.customerId, r && r.siteId, r && r.equipmentId);
+        (r && r.parts || []).forEach(p => note(p && p.customerId, p && p.siteId, p && p.equipmentId));
+      });
+      try {
+        if (typeof window.getPunchlistBackup === 'function') {
+          const pl = window.getPunchlistBackup();
+          const jobsObj = (pl && pl.jobs) || {};
+          Object.keys(jobsObj).forEach(key => {
+            (jobsObj[key] || []).forEach(item => note(item && item.customerId, item && item.siteId, item && item.equipmentId));
+          });
+        }
+      } catch (e) {}
+
+      const staleCustomerIds = Array.from(candidateCustomerIds).filter(id => !usedCustomerIds.has(id));
+      const staleSiteIds = Array.from(candidateSiteIds).filter(id => !usedSiteIds.has(id));
+      const staleMachineIds = Array.from(candidateMachineIds).filter(id => !usedMachineIds.has(id));
+
+      if (staleCustomerIds.length) saveCustomers(loadCustomers().filter(c => !c || !staleCustomerIds.includes(c.id)));
+      if (staleSiteIds.length) saveSites(loadSites().filter(s => !s || !staleSiteIds.includes(s.id)));
+      if (staleMachineIds.length) saveMachines(loadMachines().filter(m => !m || !staleMachineIds.includes(m.id)));
+    }
     function performRemoveSampleData() {
       lsWrite('lx8_sample_job_seeded', true);
       lsWrite('lx8_sample_inspection_seeded', true);
       const jobs = loadJobs();
+      const removedJobs = jobs.filter(j => isSampleJob(j));
       const keptJobs = jobs.filter(j => !isSampleJob(j));
       if (keptJobs.length !== jobs.length) saveJobs(keptJobs);
       const inspections = loadInspections();
+      const removedInspections = inspections.filter(i => isSampleInspection(i));
       const keptIns = inspections.filter(i => !isSampleInspection(i));
       if (keptIns.length !== inspections.length) saveInspections(keptIns);
       let tcRemoved = 0;
       try { if (typeof window.tcRemoveSampleEntries === 'function') tcRemoved = window.tcRemoveSampleEntries(); } catch (e) {}
+      try { cascadeRemoveOrphanedEquipment(removedJobs, removedInspections); } catch (e) { console.warn('sample data equipment cleanup failed', e); }
       if (currentInspection && isSampleInspection(currentInspection)) {
         currentInspection = null;
         results = {};
@@ -1433,7 +1516,7 @@ const ICO = {
         // above: each store gets its own try/catch so one failing
         // (e.g. loadCustomers throwing) doesn't drop the other two, or
         // anything else, from the zip.
-        let customersData = null, sitesData = null, serialsData = null;
+        let customersData = null, sitesData = null, serialsData = null, machinesData = null;
         let identityErrors = [];
         try { customersData = JSON.parse(JSON.stringify(loadCustomers() || [])); }
         catch (e) { identityErrors.push('customers'); console.warn('customers backup failed', e); }
@@ -1441,6 +1524,10 @@ const ICO = {
         catch (e) { identityErrors.push('sites'); console.warn('sites backup failed', e); }
         try { serialsData = JSON.parse(JSON.stringify(loadSerials() || [])); }
         catch (e) { identityErrors.push('serials'); console.warn('serials backup failed', e); }
+        // Phase 15A (amendment I): the new Machine store, same isolation
+        // shape as customers/sites/serials directly above.
+        try { machinesData = JSON.parse(JSON.stringify(loadMachines() || [])); }
+        catch (e) { identityErrors.push('machines'); console.warn('machines backup failed', e); }
         const photos = await STORE.getAllPhotos();
         const files = [
           { name: 'manifest.json', data: JSON.stringify({
@@ -1455,6 +1542,7 @@ const ICO = {
             customers: customersData ? customersData.length : 0,
             sites: sitesData ? sitesData.length : 0,
             serials: serialsData ? serialsData.length : 0,
+            machines: machinesData ? machinesData.length : 0,
             photos: photos.length
           }, null, 2) },
           { name: 'visits.json', data: JSON.stringify(visits) },
@@ -1471,6 +1559,7 @@ const ICO = {
         if (customersData) files.push({ name: 'customers.json', data: JSON.stringify(customersData) });
         if (sitesData) files.push({ name: 'sites.json', data: JSON.stringify(sitesData) });
         if (serialsData) files.push({ name: 'serials.json', data: JSON.stringify(serialsData) });
+        if (machinesData) files.push({ name: 'machines.json', data: JSON.stringify(machinesData) });
         for (const rec of photos) {
           if (!rec || !rec.id || !rec.blob) continue;
           const ext = (rec.blob.type && rec.blob.type.indexOf('png') >= 0) ? 'png' : 'jpg';
@@ -1645,6 +1734,10 @@ const ICO = {
         restoreIdentityStore('customers.json', saveCustomers, 'customers');
         restoreIdentityStore('sites.json', saveSites, 'sites');
         restoreIdentityStore('serials.json', saveSerials, 'serials');
+        // Phase 15A (amendment I): a missing machines.json is the normal
+        // case for any pre-Phase-15 backup and leaves local Machine data
+        // untouched, same as the other identity stores above.
+        restoreIdentityStore('machines.json', saveMachines, 'machines');
 
         refreshHome();
         let summary = punchlistRestored ? 'Backup restored'
@@ -1904,6 +1997,11 @@ const ICO = {
     // already-resolved job is a no-op (short-circuits on customerId), and
     // re-running find-or-create against the same normalized text always
     // returns the same existing record rather than creating a duplicate.
+    // Superseded by resolveJobEquipmentSnapshot() below (Phase 15A) — no
+    // longer called from anywhere. Left in place, untouched, per the
+    // "never delete existing data/code" rule; loadSerials/saveSerials/
+    // findOrCreateSerial (which this still calls) are likewise left
+    // completely untouched and are now unused dead code as well.
     function resolveJobEquipmentIds(job) {
       if (!job || job.customerId) return job;
       const customer = findOrCreateCustomer(job.customer);
@@ -1920,6 +2018,439 @@ const ICO = {
       }
       return job;
     }
+
+    // ===== MACHINE (Phase 15A — roadmap Sections 3.4-3.6) =====
+    // The target "equipment identity" record: keyed by NORMALIZED SERIAL
+    // ONLY (not scoped to a site, unlike the old Serial layer above), so
+    // the same physical machine is one record no matter which site/job it
+    // shows up on next. Same load/save shape as customers/sites (through
+    // STORE), plus a deterministic id so two devices that see the same
+    // serial number independently compute the same machine id (needed for
+    // Phase 16 sync joinability — approved amendment A).
+    //
+    // Shape:
+    //   {
+    //     id,                     // 'mach_' + encodeURIComponent(normalized serial)
+    //     serialNumber,           // as first typed, trimmed
+    //     serialNumberNormalized, // trim + lowercase — the matching key
+    //     machineType,            // '' until known
+    //     machineTypeSource,      // '' | 'inspection' | 'job' | 'manual'
+    //     salesOrder,             // '' until known
+    //     currentSiteId,          // most recent site this machine is at
+    //     currentCustomerId,      // that site's customer, for convenience
+    //     lineLabel,              // '' until set — storage only, no editor yet
+    //     moveLog: [ { at, fromSiteId, toSiteId, source, jobId, previousLineLabel } ],
+    //     createdAt, updatedAt
+    //   }
+    function loadMachines() {
+      const src = STORE.load('machines');
+      storeMem.machines = Array.isArray(src) ? src : [];
+      return storeMem.machines;
+    }
+    function saveMachines(list) {
+      storeMem.machines = Array.isArray(list) ? list : [];
+      return STORE.save('machines', storeMem.machines);
+    }
+    // Deterministic id — same normalized serial always yields the same id,
+    // on any device, without needing to look anything up first.
+    function machineIdForSerial(serialNumber) {
+      const norm = normalizeMatchText(serialNumber);
+      if (!norm) return '';
+      return 'mach_' + encodeURIComponent(norm);
+    }
+    function findOrCreateMachine(serialNumber) {
+      const norm = normalizeMatchText(serialNumber);
+      if (!norm) return null;
+      const id = machineIdForSerial(serialNumber);
+      const all = loadMachines();
+      let found = all.find(m => m && m.id === id);
+      if (found) return found;
+      const now = new Date().toISOString();
+      found = {
+        id,
+        serialNumber: String(serialNumber).trim(),
+        serialNumberNormalized: norm,
+        machineType: '',
+        machineTypeSource: '',
+        salesOrder: '',
+        currentSiteId: '',
+        // Not part of the originally-described shape — added so
+        // "currentSiteId" genuinely means "the site it's most recently
+        // been logged at" (Section 3.4) regardless of the ORDER records
+        // happen to be processed in, and so the one-time backfill (which
+        // walks history oldest-first) is idempotent: re-running it must
+        // not let an older job "move" a machine backwards past a site a
+        // later job already established. See applyMachineUpdate.
+        currentSiteAsOf: '',
+        currentCustomerId: '',
+        lineLabel: '',
+        moveLog: [],
+        createdAt: now,
+        updatedAt: now
+      };
+      all.push(found);
+      saveMachines(all);
+      return found;
+    }
+    // Applies proposed updates to ONE machine record in a single load+save
+    // round trip, enforcing the approved priority rules:
+    //   - machineType: an 'inspection'-sourced type can never be
+    //     overwritten by a 'job'-sourced one; an 'inspection'-sourced type
+    //     may replace a 'job'- or 'manual'-sourced one; any other
+    //     same-source-tier conflict is left as-is and reported back to the
+    //     caller (amendment B).
+    //   - salesOrder: first non-empty value wins; a later different value
+    //     is reported, never overwritten (amendment C).
+    //   - currentSiteId: changing it appends a moveLog entry and clears
+    //     lineLabel (amendment F).
+    // Returns { machine, typeConflict, soConflict, moved } — the caller
+    // (job/inspection save paths, and the backfill routine) uses the
+    // conflict/moved fields purely for reporting; nothing here blocks the
+    // save that triggered it.
+    function applyMachineUpdate(machineId, updates, opts) {
+      opts = opts || {};
+      updates = updates || {};
+      if (!machineId) return null;
+      const all = loadMachines();
+      const idx = all.findIndex(m => m && m.id === machineId);
+      if (idx < 0) return null;
+      const m = all[idx];
+      let changed = false;
+      const report = { machine: m, typeConflict: null, soConflict: null, moved: null };
+
+      if (updates.machineType) {
+        const incomingType = String(updates.machineType).trim();
+        const incomingSource = updates.machineTypeSource || 'manual';
+        const currentType = m.machineType || '';
+        const currentSource = m.machineTypeSource || '';
+        const sameNormalized = normalizeMatchText(incomingType) === normalizeMatchText(currentType);
+        if (!currentType) {
+          m.machineType = incomingType;
+          m.machineTypeSource = incomingSource;
+          changed = true;
+        } else if (!sameNormalized) {
+          if (incomingSource === 'inspection') {
+            // An inspection-sourced type may replace anything.
+            m.machineType = incomingType;
+            m.machineTypeSource = incomingSource;
+            changed = true;
+          } else if (currentSource === 'inspection') {
+            // Never let a job/manual value overwrite an inspection-sourced one.
+            report.typeConflict = { existingType: currentType, existingSource: currentSource, incomingType, incomingSource };
+          } else {
+            // Two non-inspection values disagree — keep the first on file,
+            // report the conflict (same "first wins" rule as before, now
+            // scoped to same-tier conflicts only).
+            report.typeConflict = { existingType: currentType, existingSource: currentSource, incomingType, incomingSource };
+          }
+        } else if (incomingSource === 'inspection' && currentSource !== 'inspection') {
+          // Same text, but now confirmed by an inspection — upgrade the
+          // recorded source so a later job-sourced change can't override it.
+          m.machineTypeSource = 'inspection';
+          changed = true;
+        }
+      }
+
+      if (updates.salesOrder) {
+        const incomingSO = String(updates.salesOrder).trim();
+        if (!m.salesOrder) {
+          m.salesOrder = incomingSO;
+          changed = true;
+        } else if (m.salesOrder !== incomingSO) {
+          report.soConflict = { existing: m.salesOrder, incoming: incomingSO };
+        }
+      }
+
+      if (updates.siteId) {
+        // asOf: the real-world date this fact is true as of (a job's own
+        // date, an inspection's own date) — defaults to "now" for an
+        // ordinary live save. Comparing against the machine's own
+        // currentSiteAsOf (rather than just reacting to "does this differ
+        // from what's on file right now") is what makes this correct
+        // regardless of processing order: an event dated BEFORE the
+        // machine's already-recorded most-recent site is never treated as
+        // a move, even if the two site ids differ — it's stale information
+        // that's already been superseded, not a new relocation. Without
+        // this, replaying history oldest-first (the backfill) would
+        // "move" the machine forward through every job every time it's
+        // run, appending duplicate moveLog entries on every re-run.
+        const asOf = opts.asOf || new Date().toISOString();
+        const knownAsOf = m.currentSiteAsOf || '';
+        // Compared as real timestamps, not raw strings — job.date is a
+        // plain "YYYY-MM-DD" while createdAt/"now" are full ISO
+        // timestamps, and those two formats don't compare correctly as
+        // plain strings (e.g. "2026-01-05" sorts before
+        // "2026-01-05T00:00:00.000Z" even though they're the same day).
+        const asOfMs = Date.parse(asOf);
+        const knownAsOfMs = Date.parse(knownAsOf);
+        const isNewer = !knownAsOf || isNaN(knownAsOfMs) || isNaN(asOfMs) || asOfMs >= knownAsOfMs;
+        if (updates.siteId !== m.currentSiteId) {
+          if (isNewer) {
+            const moveEntry = {
+              at: new Date().toISOString(),
+              fromSiteId: m.currentSiteId || '',
+              toSiteId: updates.siteId,
+              source: opts.source || '',
+              jobId: opts.jobId || '',
+              previousLineLabel: m.lineLabel || ''
+            };
+            m.moveLog = Array.isArray(m.moveLog) ? m.moveLog.slice() : [];
+            m.moveLog.push(moveEntry);
+            report.moved = { fromSiteId: moveEntry.fromSiteId, toSiteId: moveEntry.toSiteId };
+            m.currentSiteId = updates.siteId;
+            m.currentSiteAsOf = asOf;
+            m.lineLabel = '';
+            changed = true;
+          }
+          // else: an older/stale record disagreeing with the current
+          // (more recent) site — not a move, not reported; the current
+          // site is already correct and stays as-is.
+        } else if (isNewer && asOf !== knownAsOf) {
+          // Same site, but confirmed by a more recent record — keep
+          // currentSiteAsOf meaningful without logging a no-op "move".
+          m.currentSiteAsOf = asOf;
+          changed = true;
+        }
+      }
+      if (updates.customerId && updates.customerId !== m.currentCustomerId) {
+        m.currentCustomerId = updates.customerId;
+        changed = true;
+      }
+
+      if (changed) {
+        m.updatedAt = new Date().toISOString();
+        all[idx] = m;
+        saveMachines(all);
+      }
+      return report;
+    }
+    // Resolves (creating only what's missing) Customer/Site/Machine ids for
+    // ONE job and stamps job.customerId/siteId/equipmentIds — called only
+    // from real save paths (saveJobFromForm, rememberJobSerial) and the
+    // one-time backfill, NEVER from loadJobs()/ensureJobIdentity, per
+    // approved amendment D ("no writes on load"). Idempotent: re-running
+    // it on an unchanged job creates nothing new and changes nothing on
+    // the underlying machine records (find-or-create by exact normalized
+    // text / deterministic id; applyMachineUpdate only writes when a value
+    // actually changes).
+    function resolveJobEquipmentSnapshot(job, opts) {
+      opts = opts || {};
+      if (!job) return job;
+      const customer = findOrCreateCustomer(job.customer);
+      if (!customer) return job;
+      job.customerId = customer.id;
+      const site = findOrCreateSite(customer.id, job.site);
+      if (site) job.siteId = site.id;
+      const serials = normalizeJobSerials(Array.isArray(job.serials) ? job.serials : []);
+      const singleSerial = serials.length === 1;
+      const machineIds = [];
+      if (!singleSerial && serials.length && job.so && opts.multiSerialSoSkipped) {
+        opts.multiSerialSoSkipped.push({ serials: serials.slice(), so: job.so, jobId: job.id });
+      }
+      serials.forEach(serial => {
+        const machine = findOrCreateMachine(serial);
+        if (!machine) return;
+        machineIds.push(machine.id);
+        const updates = {};
+        if (job.machine) { updates.machineType = job.machine; updates.machineTypeSource = 'job'; }
+        if (singleSerial && job.so) updates.salesOrder = job.so;
+        if (site) { updates.siteId = site.id; updates.customerId = customer.id; }
+        const result = applyMachineUpdate(machine.id, updates, {
+          source: opts.source || 'job-save',
+          jobId: job.id,
+          asOf: job.date || job.createdAt || ''
+        });
+        if (result) {
+          if (result.typeConflict && opts.typeConflicts) opts.typeConflicts.push(Object.assign({ serial }, result.typeConflict));
+          if (result.soConflict && opts.soConflicts) opts.soConflicts.push(Object.assign({ serial }, result.soConflict));
+          if (result.moved && opts.moves) opts.moves.push(Object.assign({ serial }, result.moved));
+        }
+      });
+      job.equipmentIds = machineIds;
+      return job;
+    }
+    // Same idea as resolveJobEquipmentSnapshot, for one inspection. Called
+    // whenever an inspection is actually saved (saveCurrentDraft, and the
+    // edit-meta save handler) — never from a mere read. customerId/siteId
+    // are taken from the linked job's own already-resolved ids when there
+    // is one (a standalone inspection has no job/site to snapshot, so
+    // siteId stays ''); equipmentId comes from the inspection's own serial
+    // text. The literal placeholder "TBD" (the unlinked-inspection default
+    // — see startInspectionFromMachinePopup) is treated as "no real serial
+    // yet" and never resolves to a machine.
+    function resolveInspectionEquipmentSnapshot(inspection, opts) {
+      opts = opts || {};
+      if (!inspection) return inspection;
+      let customerId = '', siteId = '';
+      if (inspection.jobId) {
+        const job = (loadJobs() || []).find(j => j && j.id === inspection.jobId);
+        if (job) { customerId = job.customerId || ''; siteId = job.siteId || ''; }
+      }
+      if (!customerId) {
+        const customer = findOrCreateCustomer(inspection.customer);
+        if (customer) customerId = customer.id;
+      }
+      if (customerId) inspection.customerId = customerId;
+      if (siteId) inspection.siteId = siteId;
+      const serial = String(inspection.serial || '').trim();
+      if (serial && serial.toUpperCase() !== 'TBD') {
+        const machine = findOrCreateMachine(serial);
+        if (machine) {
+          inspection.equipmentId = machine.id;
+          const updates = {};
+          if (inspection.model) { updates.machineType = inspection.model; updates.machineTypeSource = 'inspection'; }
+          if (siteId) { updates.siteId = siteId; if (customerId) updates.customerId = customerId; }
+          if (Object.keys(updates).length) {
+            const result = applyMachineUpdate(machine.id, updates, {
+              source: opts.source || 'inspection-save',
+              jobId: inspection.jobId || '',
+              asOf: inspection.date || inspection.createdAt || ''
+            });
+            if (result) {
+              if (result.typeConflict && opts.typeConflicts) opts.typeConflicts.push(Object.assign({ serial }, result.typeConflict));
+              if (result.moved && opts.moves) opts.moves.push(Object.assign({ serial }, result.moved));
+            }
+          }
+        }
+      }
+      return inspection;
+    }
+    // True once an inspection's machine type must never change again:
+    // any recorded answer, or a Complete status. A still-blank Draft
+    // remains fully editable. (Approved answer to Decision 2/5.)
+    function isInspectionTypeLocked(inspection) {
+      if (!inspection) return false;
+      if (inspection.status === 'Complete') return true;
+      const results = inspection.results;
+      if (results && typeof results === 'object' && Object.keys(results).length) return true;
+      return false;
+    }
+
+    // ===== ONE-TIME EQUIPMENT BACKFILL (Phase 15A) =====
+    // Sweeps every existing job, inspection, punchlist item and parts
+    // request once, resolving/creating Customer, Site and Machine records
+    // by exact normalized match and stamping the new id fields — the
+    // "backfill existing records" half of the task. Guarded by a
+    // localStorage flag (same pattern as the existing sample-data-seeded
+    // flags) so it only actually runs once per device; runEquipmentBackfill
+    // itself is exposed unguarded on window for testing (amendment H
+    // requires it to be safe to run twice: idempotent by construction,
+    // since every step below is find-or-create-by-exact-match or an
+    // update that only writes when a value truly changed).
+    function sortByDateThenCreated(list, dateField) {
+      return (list || []).slice().sort((a, b) => {
+        const ad = (a && (a[dateField] || a.createdAt)) || '';
+        const bd = (b && (b[dateField] || b.createdAt)) || '';
+        if (ad < bd) return -1;
+        if (ad > bd) return 1;
+        return 0;
+      });
+    }
+    async function runEquipmentBackfill() {
+      const report = {
+        machinesBefore: (loadMachines() || []).length,
+        machinesAfter: 0,
+        machinesCreated: 0,
+        moves: [],
+        typeConflicts: [],
+        soConflicts: [],
+        multiSerialSoSkipped: []
+      };
+
+      // 1) Jobs, oldest first — establishes each machine's first-seen type
+      // (job-sourced) and site, and every job-vs-job type/SO conflict.
+      const jobs = loadJobs();
+      sortByDateThenCreated(jobs, 'date').forEach(job => {
+        resolveJobEquipmentSnapshot(job, {
+          source: 'backfill',
+          typeConflicts: report.typeConflicts,
+          soConflicts: report.soConflicts,
+          moves: report.moves,
+          multiSerialSoSkipped: report.multiSerialSoSkipped
+        });
+      });
+      saveJobs(jobs);
+
+      // 2) Inspections, oldest first — inspection-sourced type always wins
+      // over a job-sourced one (applyMachineUpdate enforces this), and the
+      // most recent inspection's type wins over an earlier inspection's,
+      // simply because it's applied last.
+      const inspections = loadInspections();
+      sortByDateThenCreated(inspections, 'date').forEach(ins => {
+        resolveInspectionEquipmentSnapshot(ins, {
+          source: 'backfill',
+          typeConflicts: report.typeConflicts,
+          moves: report.moves
+        });
+      });
+      saveInspections(inspections);
+
+      // 3) Punchlist items — ids only (never a machine type), from each
+      // item's own serial and its bucket's linked job (already resolved
+      // above). Reached through the module's own exposed backup getter,
+      // since punchlist state lives in a private module scope.
+      try {
+        if (typeof plLoadData === 'function') await plLoadData();
+        if (typeof window.getPunchlistBackup === 'function' && typeof window.setPunchlistBackup === 'function') {
+          const pl = window.getPunchlistBackup();
+          const jobsObj = (pl && pl.jobs) || {};
+          const jobIdByKey = (pl && pl.jobIdByKey) || {};
+          const freshJobs = loadJobs();
+          let plChanged = false;
+          Object.keys(jobsObj).forEach(key => {
+            const jobId = jobIdByKey[key];
+            const linkedJob = jobId ? freshJobs.find(j => j && j.id === jobId) : null;
+            (jobsObj[key] || []).forEach(item => {
+              if (!item) return;
+              const nextCustomerId = linkedJob ? (linkedJob.customerId || '') : (item.customerId || '');
+              const nextSiteId = linkedJob ? (linkedJob.siteId || '') : (item.siteId || '');
+              let nextEquipmentId = item.equipmentId || '';
+              const serial = String(item.serial || '').trim();
+              if (serial) {
+                const machine = findOrCreateMachine(serial);
+                if (machine) nextEquipmentId = machine.id;
+              }
+              if (item.customerId !== nextCustomerId || item.siteId !== nextSiteId || item.equipmentId !== nextEquipmentId) {
+                item.customerId = nextCustomerId;
+                item.siteId = nextSiteId;
+                item.equipmentId = nextEquipmentId;
+                plChanged = true;
+              }
+            });
+          });
+          if (plChanged) await window.setPunchlistBackup(pl);
+        }
+      } catch (e) { console.warn('backfill: punchlist sweep failed', e); }
+
+      // 4) Parts requests — header + line ids, via the same stamping
+      // function used at every real save.
+      const requests = loadPartsRequests();
+      let requestsChanged = false;
+      requests.forEach(req => {
+        const before = JSON.stringify(req);
+        stampPartsRequestEquipment(req);
+        if (JSON.stringify(req) !== before) requestsChanged = true;
+      });
+      if (requestsChanged) savePartsRequests(requests);
+
+      report.machinesAfter = (loadMachines() || []).length;
+      report.machinesCreated = Math.max(0, report.machinesAfter - report.machinesBefore);
+      return report;
+    }
+    async function runEquipmentBackfillIfNeeded() {
+      if (lsRead('lx8_equipment_backfill_v1_done', false)) return null;
+      let report = null;
+      try {
+        report = await runEquipmentBackfill();
+      } catch (e) {
+        console.warn('equipment backfill failed', e);
+        return null;
+      }
+      lsWrite('lx8_equipment_backfill_v1_done', true);
+      return report;
+    }
+    window.runEquipmentBackfill = runEquipmentBackfill;
+    window.runEquipmentBackfillIfNeeded = runEquipmentBackfillIfNeeded;
 
     // ===== PARTS REQUESTS =====
     // Same load/save shape as loadJobs/saveJobs above. Photo blobs live in
@@ -1973,6 +2504,32 @@ const ICO = {
     function newPartsRequestLine() {
       return { id: newEntityId('prp'), description: '', qty: 1, partNumber: '', notes: '', photoId: null, photoThumb: '', urgent: false };
     }
+    // Phase 15A: stamps/refreshes a parts request's own customerId/siteId/
+    // equipmentId (from its linked job and its own header `serial` field)
+    // and fills in any line that doesn't already have its own equipmentId
+    // (a manually-added line, or one from before this phase) with the
+    // header's — amendment E's "header ids only for lines with no source
+    // serial". A line already stamped with its own source serial's
+    // equipmentId (see syncPartsRequestFromSource) is left untouched.
+    // Called only from real save points (savePartsFormDraft and
+    // syncPartsRequestFromSource) — never merely on open.
+    function stampPartsRequestEquipment(req) {
+      if (!req) return;
+      const job = req.jobId ? (loadJobs() || []).find(j => j && j.id === req.jobId) : null;
+      req.customerId = job ? (job.customerId || '') : (req.customerId || '');
+      req.siteId = job ? (job.siteId || '') : (req.siteId || '');
+      const headerSerial = String(req.serial || '').trim();
+      if (headerSerial && typeof findOrCreateMachine === 'function') {
+        const machine = findOrCreateMachine(headerSerial);
+        if (machine) req.equipmentId = machine.id;
+      }
+      (req.parts || []).forEach(line => {
+        if (!line) return;
+        if (!line.equipmentId) line.equipmentId = req.equipmentId || '';
+        line.customerId = req.customerId || '';
+        line.siteId = req.siteId || '';
+      });
+    }
     // Auto-generates or updates a parts-request line from a punchlist
     // item or inspection finding. One draft per job, not one per
     // finding — reuses whatever unsent draft already exists for the
@@ -2013,21 +2570,29 @@ const ICO = {
         // sometimes not, with no visible reason why. Now shows whenever
         // the source item has a serial, full stop.
         const serialNote = serial ? ('Serial ' + serial) : '';
+        // Phase 15A / amendment E: a line generated from a punchlist item
+        // or inspection finding is stamped with THAT item's own serial's
+        // equipmentId, not the request header's — a job with more than one
+        // machine can have findings against different ones.
+        const sourceMachine = (serial && typeof findOrCreateMachine === 'function') ? findOrCreateMachine(serial) : null;
         if (idx > -1) {
           const line = req.parts[idx];
           line.description = desc;
           line.urgent = !!urgent;
           line.source = { type: sourceType, id: sourceId, label: findingLabel || '' };
           if (serialNote) line.notes = serialNote;
+          if (sourceMachine) line.equipmentId = sourceMachine.id;
         } else {
           const line = newPartsRequestLine();
           line.description = desc;
           line.urgent = !!urgent;
           line.source = { type: sourceType, id: sourceId, label: findingLabel || '' };
           if (serialNote) line.notes = serialNote;
+          if (sourceMachine) line.equipmentId = sourceMachine.id;
           req.parts.push(line);
         }
       }
+      if (typeof stampPartsRequestEquipment === 'function') stampPartsRequestEquipment(req);
       req.updatedAt = new Date().toISOString();
       savePartsRequests(requests);
       // Keep the open Parts screen in sync if this request happens to
@@ -2521,6 +3086,12 @@ const ICO = {
         // if the form is the thing currently on screen.
         renderPartsFormHeader();
       }
+      // Phase 15A: this is the real, single commit point for the manual
+      // Parts Request form (header edits, adding/editing/deleting a line,
+      // sending) — stamp/refresh equipment ids here, never merely while
+      // the form is open (openPartsForm/newPartsRequestDraft do not call
+      // find-or-create).
+      if (typeof stampPartsRequestEquipment === 'function') stampPartsRequestEquipment(partsFormDraft);
       partsFormDraft.updatedAt = new Date().toISOString();
       const all = loadPartsRequests();
       const idx = all.findIndex(r => r.id === partsFormDraft.id);
@@ -2884,7 +3455,12 @@ const ICO = {
       // loaded. Deliberately scoped to exactly the job the technician is
       // opening, so viewing Job Detail never touches any other job's data.
       if (!job.customerId) {
-        resolveJobEquipmentIds(job);
+        // Phase 15A: resolveJobEquipmentIds (old Serial layer) is
+        // superseded by resolveJobEquipmentSnapshot (Machine layer) — see
+        // that function's comment. Kept as a lazy safety net for any job
+        // that somehow reached here without ever going through a save
+        // path or the one-time backfill.
+        resolveJobEquipmentSnapshot(job, { source: 'job-view-fallback' });
         try { saveJobs(loadJobs()); } catch (e) {}
       }
       detailJobId = id;
@@ -3262,6 +3838,9 @@ const ICO = {
       if (!Array.isArray(job.serials)) job.serials = [];
       if (!job.serials.some(s => String(s).toLowerCase() === serial.toLowerCase())) {
         job.serials.push(serial);
+        // Phase 15A: this is a real save (job.serials changes and persists
+        // below), so resolve/stamp equipment ids here too.
+        resolveJobEquipmentSnapshot(job, { source: 'job-save' });
         saveJobs(list);
       }
       jobSerialsDraft = job.serials.slice();
@@ -3357,21 +3936,27 @@ const ICO = {
       try { lsWrite('lx8_last_tech', tech); } catch (e) {}
       const list = loadJobs();
       let successCopy;
+      let savedJob;
       if (editingJobId) {
         const idx = list.findIndex(j => j.id === editingJobId);
         if (idx < 0) { toast('Job not found'); return; }
         list[idx] = { ...list[idx], ...payload };
+        savedJob = list[idx];
         successCopy = 'Job updated';
       } else {
         const newId = newEntityId('job');
-        list.unshift(ensureJobIdentity({
+        savedJob = ensureJobIdentity({
           id: newId,
           createdAt: new Date().toISOString(),
           ...payload
-        }));
+        });
+        list.unshift(savedJob);
         editingJobId = newId;
         successCopy = 'Job saved';
       }
+      // Phase 15A: resolve/stamp Customer, Site and Machine ids on every
+      // real job save (not on load) — see resolveJobEquipmentSnapshot.
+      resolveJobEquipmentSnapshot(savedJob, { source: 'job-save' });
       // Phase 7B: the success toast used to fire right here,
       // unconditionally, before saveJobs was even called. Now it only
       // fires once saveJobs' own return value confirms the write
@@ -4822,7 +5407,14 @@ const ICO = {
           return;
         }
         list[idx].customer = customer;
-        list[idx].model = model;
+        // Phase 15A / Decision 2: once an inspection has any recorded
+        // answer or is Complete, its machine type must never change again.
+        // Every other field in this form still saves normally; only the
+        // type change itself is dropped, silently as far as the record
+        // goes, but the technician is told via toast (not a silent revert).
+        const typeLocked = isInspectionTypeLocked(list[idx]) &&
+          normalizeMatchText(model) !== normalizeMatchText(list[idx].model);
+        if (!typeLocked) list[idx].model = model;
         list[idx].serial = serial;
         list[idx].technician = tech;
         list[idx].date = date;
@@ -4832,12 +5424,13 @@ const ICO = {
         list[idx].jobId = pickedJob || null;
         linkedJobIdForStart = pickedJob || null;
         list[idx].updatedAt = new Date().toISOString();
+        resolveInspectionEquipmentSnapshot(list[idx], { source: 'inspection-save' });
         saveInspections(list);
         currentInspection = list[idx];
         editingInspectionId = null;
         document.getElementById('btnBeginInspection').textContent = 'Begin Inspection';
         document.getElementById('btnDeleteInspection').classList.add('hidden');
-        toast('Inspection details updated');
+        toast(typeLocked ? "Machine type can't be changed once answers are recorded." : 'Inspection details updated');
         showScreen('screenInspectList');
         setHeader('Inspections');
         refreshHome();
@@ -7395,7 +7988,10 @@ const ICO = {
       APP_DATA = window.EMBEDDED_DATA;
     }
     initApp();
-    bootStorage().then(() => {
+    bootStorage().then(async () => {
+      // Phase 15A: one-time equipment backfill, guarded so it only ever
+      // actually runs once per device (see runEquipmentBackfillIfNeeded).
+      try { await runEquipmentBackfillIfNeeded(); } catch (e) { console.warn('equipment backfill', e); }
       try { refreshHome(); } catch (e) {}
       const later = window.requestIdleCallback || function(fn){ setTimeout(fn, 1800); };
       later(() => { warmExcelLibs(); });
@@ -8412,6 +9008,20 @@ const IDB_NAME = "FieldPunchlistDB";
         photo: tempPhoto !== null ? tempPhoto : (editingId ? (getItems().find(i => String(i.id) === String(editingId))?.photo || null) : null)
       };
       if (!formData.description) { alert("Description is required"); return; }
+
+      // Phase 15A: stamp customerId/siteId (from the linked job, if any)
+      // and equipmentId (from this item's own serial) at the real save
+      // point — never merely while the sheet is open.
+      (function stampPunchlistItemEquipment() {
+        const job = (typeof punchlistLinkedJob === 'function') ? punchlistLinkedJob() : null;
+        formData.customerId = job ? (job.customerId || '') : '';
+        formData.siteId = job ? (job.siteId || '') : '';
+        formData.equipmentId = '';
+        if (formData.serial && typeof findOrCreateMachine === 'function') {
+          const machine = findOrCreateMachine(formData.serial);
+          if (machine) formData.equipmentId = machine.id;
+        }
+      })();
 
       let items = getItems();
       let savedId;
