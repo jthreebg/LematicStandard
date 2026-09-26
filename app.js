@@ -1,5 +1,4 @@
 
-
 const ICO = {
       clip: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="8" y="3.2" width="8" height="3.6" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="5.2" y="5.2" width="13.6" height="15.6" rx="2.4" stroke="currentColor" stroke-width="1.2"/><path d="M9 12h6M9 16h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
       search: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="6.2" stroke="currentColor" stroke-width="1.8"/><path d="M20 20l-3.6-3.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
@@ -515,18 +514,14 @@ const ICO = {
       }
       document.body.classList.toggle('inspect-active', id === 'screenInspect');
       document.body.classList.toggle('on-findings', id === 'screenFindings');
-      document.body.classList.toggle('on-inspect-notes', id === 'screenNotes');
-      document.body.classList.toggle('on-inspect-preview', id === 'screenInspectPreview');
       if (id === 'screenInspect' && typeof window.bindInspectCamFab === 'function') window.bindInspectCamFab();
       const bottom = document.getElementById('bottomBar');
       const barInspect = document.getElementById('barInspect');
       const bars = {
-        screenInspect: 'barInspect',
+        screenInspect: 'barInspect'
         // screenFindings intentionally has no bottom bar — replaced with a
         // header Export button (see #btnInspectExport), matching the
         // Time Cards / Punchlist pattern instead of Back+Save.
-        screenNotes: 'barFindings',
-        screenInspectPreview: 'barFindings'
       };
       const barIds = ['barInspect', 'barFindings', 'barNotes', 'barPreview'];
       if (bottom) {
@@ -568,7 +563,6 @@ const ICO = {
         }
       }
       document.body.classList.toggle('on-list-search', id === 'screenInspectList' || id === 'screenJobsList');
-      document.body.classList.toggle('on-notes', id === 'screenNotes');
       if (id === 'screenNotes') {
         initNotesEditor();
         requestAnimationFrame(placeNotesFormatBar);
@@ -576,18 +570,15 @@ const ICO = {
         document.body.classList.remove('notes-focus');
         document.body.classList.remove('notes-typing');
       }
-      const inspectFlow = id === 'screenInspect' || id === 'screenFindings' || id === 'screenNotes';
+      const inspectFlow = id === 'screenInspect' || id === 'screenFindings';
       document.body.classList.toggle('on-inspect-flow', inspectFlow);
       const inInspections = (
         id === 'screenStart' ||
         id === 'screenInspect' ||
-        id === 'screenFindings' ||
-        (id === 'screenNotes') ||
-        id === 'screenInspectPreview'
+        id === 'screenFindings'
       );
       document.body.classList.toggle('on-inspections', inInspections);
       if (id === 'screenFindings') extraSectionTab = 'findings';
-      else if (id === 'screenNotes') extraSectionTab = 'notes';
       else if (id === 'screenInspect') extraSectionTab = null;
       if (inspectFlow && typeof APP_DATA !== 'undefined' && APP_DATA && APP_DATA.sections) {
         renderSectionDots(true);
@@ -1700,7 +1691,16 @@ const ICO = {
       if (!desc) {
         if (idx > -1) req.parts.splice(idx, 1);
       } else {
-        const serialNote = (serial && serial !== req.serial) ? ('Serial ' + serial) : '';
+        // Bugfix: this used to only show the serial when it differed
+        // from the request's own req.serial — meant to avoid repeating
+        // it when they matched, since req.serial is already shown
+        // elsewhere on the request. In practice this made the note
+        // appear or disappear based on a comparison the technician has
+        // no visibility into, so a part generated from a punchlist item
+        // that always has a serial attached would sometimes show it and
+        // sometimes not, with no visible reason why. Now shows whenever
+        // the source item has a serial, full stop.
+        const serialNote = serial ? ('Serial ' + serial) : '';
         if (idx > -1) {
           const line = req.parts[idx];
           line.description = desc;
@@ -5065,11 +5065,6 @@ const ICO = {
           window.filterInspectHome(btn.getAttribute('data-filter') || '');
         });
       });
-      const wrap = document.getElementById('inspectPreviewWrap');
-      if (wrap && wrap.dataset.bound !== '1') {
-        wrap.dataset.bound = '1';
-        wrap.addEventListener('click', () => wrap.classList.toggle('expanded'));
-      }
     }
     let inspectHomeFilter = '';
     function conditionBucket(value) {
@@ -5283,11 +5278,6 @@ const ICO = {
       showFindings();
     }
 
-    document.getElementById('btnFindingsBack').addEventListener('click', () => {
-      renderSection();
-      showScreen('screenInspect');
-      setHeader('Inspecting');
-    });
     document.querySelectorAll('.inspect-count-tile').forEach(btn => {
       btn.addEventListener('click', () => {
         const next = btn.getAttribute('data-filter') || '';
@@ -5297,14 +5287,6 @@ const ICO = {
       });
     });
 
-    document.getElementById('btnFindingsNext').addEventListener('click', () => {
-      if (typeof syncNotesField === 'function') syncNotesField();
-      if (currentInspection) {
-        currentInspection.summaryNotes = (document.getElementById('summaryNotes') || {}).value || currentInspection.summaryNotes;
-        saveCurrentDraft();
-      }
-      if (typeof openSaveSheet === 'function') openSaveSheet();
-    });
     const btnInspectExport = document.getElementById('btnInspectExport');
     if (btnInspectExport) btnInspectExport.addEventListener('click', () => {
       if (typeof syncNotesField === 'function') syncNotesField();
@@ -5345,7 +5327,9 @@ const ICO = {
     }
     function placeNotesFormatBar() {
       const bar = document.getElementById('notesFormatBar');
-      if (!bar || !document.body.classList.contains('on-notes')) return;
+      // Phase 10 Task D: was !document.body.classList.contains('on-notes')
+      // — see the matching CSS fix above #notesFormatBar for why.
+      if (!bar || !document.body.classList.contains('notes-focus')) return;
       const vv = window.visualViewport;
       const kb = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
       const typing = kb > 80;
@@ -5390,18 +5374,6 @@ const ICO = {
       window.addEventListener('resize', placeNotesFormatBar);
     }
 
-    function openFullNotes(source, value) {
-      notesSource = source || 'inspection';
-      setNotesContent(value || '');
-      showFindings();
-      setHeader(source === 'visit-letter' ? 'On Site' : 'Notes');
-      initNotesEditor();
-      requestAnimationFrame(() => {
-        const ed = document.getElementById('notesEditor');
-        if (ed) ed.focus();
-        placeNotesFormatBar();
-      });
-    }
     function closeFullNotes() {
       syncNotesField();
       const html = (document.getElementById('summaryNotes') || {}).value || '';
@@ -6480,7 +6452,6 @@ const ICO = {
       if (currentInspection && currentInspection.status !== 'Complete') {
         saveCurrentDraft();
       }
-      if (document.body.classList.contains('on-notes')) syncNotesField();
       closeSearch();
       showScreen('screenInspectList');
       setHeader('Inspections');
@@ -7307,13 +7278,6 @@ const IDB_NAME = "FieldPunchlistDB";
     // forget for them, same as before. saveItem is the one caller that
     // now awaits this and acts on the result.
     async function setItems(items) { data.jobs[data.currentJob] = items; return await plSaveData(); }
-
-    function punchlistShowToast(msg) {
-      const t = document.getElementById("toast");
-      t.textContent = msg;
-      t.classList.add("show");
-      setTimeout(() => t.classList.remove("show"), 2200);
-    }
 
     function statusBadgeClass(s) {
       if (s === "Not Started") return "badge-notstarted";
@@ -9181,7 +9145,7 @@ const IDB_NAME = "FieldPunchlistDB";
         doc.text('No punchlist items to report.', L, y);
       } else {
         lineKeys.forEach(key => {
-          lineHeader(key);
+          lineHeader(key === NO_LINE ? key : 'Line ' + key);
           groups.get(key)
             .slice()
             .sort((a, b) => rank(b.priority) - rank(a.priority))

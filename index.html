@@ -33,7 +33,7 @@
       if(light)document.documentElement.classList.add('theme-light');
     }catch(e){}})();
   </script>
-  <link rel="stylesheet" href="app.css?v=144" />
+  <link rel="stylesheet" href="app.css?v=151" />
   
 
 
@@ -591,7 +591,14 @@
     </div>
 
     <div class="jd-section-label jd-section-pad">Parts</div>
-    <div class="card job-detail-list-card" data-parts-editable>
+    <!-- Bugfix: this card used to carry data-parts-editable itself,
+         which meant the entire parts list — not just the editing
+         controls — got hidden once a request left "unsent" status
+         (e.g. Pending). A technician could no longer see what they'd
+         already sent. The card (and the list inside it) now always
+         stays visible; only the actual add/edit affordance below is
+         gated on editability. -->
+    <div class="card job-detail-list-card">
       <div id="partsFormList">
         <div class="empty-state compact"><p>No parts added yet.</p></div>
       </div>
@@ -884,12 +891,6 @@
 
   </div>
 
-  <!-- NOTES -->
-  <div class="screen" id="screenNotes"></div>
-
-  <!-- PREVIEW -->
-  <div class="screen" id="screenInspectPreview"></div>
-
   <!-- Delete confirm modal — Liquid Glass -->
 
   <div id="machineModal" class="modal-overlay hidden" aria-hidden="true">
@@ -973,10 +974,6 @@
     <div class="bar-inspect hidden" id="barInspect">
       <button class="btn btn-outline" id="btnPrevSection">← Prev</button>
       <button class="btn btn-primary" id="btnNextSection">Next →</button>
-    </div>
-    <div class="bar-findings hidden" id="barFindings">
-      <button class="btn btn-outline" id="btnFindingsBack">Back</button>
-      <button class="btn btn-primary" id="btnFindingsNext">Save</button>
     </div>
     <div class="bar-notes hidden" id="barNotes">
       <button class="btn btn-outline" id="btnNotesBack">Back</button>
@@ -1149,11 +1146,8 @@
   
   
   
-  
-  
-  
-  <script src="qrcode.min.js?v=144" defer></script>
-  <script src="templates.js?v=144" defer></script>
-  <script src="app.js?v=144" defer></script>
+  <script src="qrcode.min.js?v=151" defer></script>
+  <script src="templates.js?v=151" defer></script>
+  <script src="app.js?v=151" defer></script>
 </body>
 </html>

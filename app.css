@@ -1,4 +1,3 @@
-
 :root {
       /* Primary actions still blue; surfaces match reference UI */
       /* Option 2 — Industrial steel + LeMatic red accent */
@@ -1259,30 +1258,12 @@
     /* Inspect screen needs room for the fixed bottom bar */
     #screenInspect.active,
     #screenFindings.active,
-    #screenNotes.active,
-    #screenInspectPreview.active,
     #screenVisit.active,
     #screenVisitPreview.active {
       padding-bottom: var(--locked-bar-space);
     }
-    #screenNotes.active {
-      display: flex;
-      flex-direction: column;
-      padding: 0;
-      padding-bottom: env(safe-area-inset-bottom, 0px);
-      min-height: calc(100dvh - var(--header-h));
-      min-height: calc(100svh - var(--header-h));
-      min-height: calc(var(--app-vh, 100dvh) - var(--header-h));
-    }
-    body.on-notes #screenNotes.active {
-      padding-top: 0;
-      padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px));
-    }
     body.on-notes.notes-typing #bottomBar {
       display: none !important;
-    }
-    body.on-notes.notes-typing #screenNotes.active {
-      padding-bottom: env(safe-area-inset-bottom, 0px);
     }
     #notesEditor {
       flex: 1;
@@ -1347,7 +1328,14 @@
       scrollbar-width: none;
     }
     #notesFormatBar::-webkit-scrollbar { display: none; }
-    body.on-notes.notes-focus #notesFormatBar { display: flex; }
+    /* Phase 10 Task D: was body.on-notes.notes-focus — on-notes could
+       only ever be set by the now-removed screenNotes screen (proven
+       dead in Task B/C), so this rule could never match. The current,
+       live Notes editor sits inside screenFindings and is already
+       correctly tracked by notes-focus alone (set/cleared by
+       #notesEditor's real focus/blur listeners) — dropping the dead
+       on-notes requirement is the toolbar's actual current condition. */
+    body.notes-focus #notesFormatBar { display: flex; }
     #notesFormatBar button {
       flex: 1 0 auto;
       min-width: 36px;
@@ -3488,10 +3476,15 @@
     #screenPunchlist .pl-item:active { filter: brightness(1.06); }
     /* Created date, kept quiet in the corner for reference rather than
        as a field in the main content — no longer editable on the
-       sheet, just a passive stamp on the card itself. */
+       sheet, just a passive stamp on the card itself.
+       Bugfix: originally pinned to the top-right corner, which is
+       exactly where .list-item-actions' status pill already sits via
+       normal flex flow — the two were landing directly on top of each
+       other. Moved to the bottom-right corner instead, clear of the
+       status pill regardless of how tall the card gets. */
     #screenPunchlist .pl-item .pl-created-tag {
       position: absolute;
-      top: 10px; right: 14px;
+      bottom: 10px; right: 14px;
       font-size: 0.66rem;
       color: var(--muted-2, var(--muted));
       opacity: 0.6;
@@ -4286,7 +4279,15 @@
       position: relative;
       z-index: 1;
     }
-    #screenFindings #notesFormatBar {
+    /* Phase 10 Task D: this unconditional hide (higher specificity +
+       !important than the body.notes-focus #notesFormatBar rule above)
+       was the actual, separate reason the toolbar stayed hidden even
+       once the on-notes/notes-focus condition was corrected — it
+       blocked the toolbar unconditionally, regardless of that
+       condition. Scoped to yield specifically while notes-focus is
+       set, so the bar still stays hidden by default the rest of the
+       time, exactly as this rule already did. */
+    body:not(.notes-focus) #screenFindings #notesFormatBar {
       display: none !important;
     }
 
@@ -4312,10 +4313,6 @@
     .save-sheet-scrim:not(.show) {
       pointer-events: none !important;
     }
-    #inspectPreviewWrap { pointer-events: auto; }
-    #inspectPreviewWrap #irPreviewSheet,
-    #inspectPreviewWrap #irPreviewSheet * { pointer-events: none !important; }
-
     html, body, #app, .screen.active, .app-header, .header-btn, button {
       pointer-events: auto !important;
     }
@@ -4960,11 +4957,16 @@
     html.theme-light .btn-row {
       background: #f2f4f7 !important;
     }
-    /* Parts Request's Save/Send row sits mid-content, not as a true
+    /* Parts Request's old Save/Send row sat mid-content, not as a true
        bottom action bar like Time Cards' edit bar — the shared gray box
-       above shows as a stray rectangle poking out past the pill buttons'
-       rounded corners here specifically. */
-    html.theme-light #screenPartsForm .btn-row {
+       above showed as a stray rectangle poking out past the pill buttons'
+       rounded corners here specifically. That row itself is gone now
+       (Send moved to the header), but #partsLineModal's own Cancel/Save
+       row is the exact same shape of mid-content row and was never
+       given this same exception — same stray gray rectangle, just in
+       the Add/Edit Part sheet instead. */
+    html.theme-light #screenPartsForm .btn-row,
+    html.theme-light #partsLineModal .btn-row {
       background: transparent !important;
     }
     html.theme-light #pl-modal .modal,
@@ -6787,11 +6789,26 @@
        pill does; only the .on state is new, keyed to the existing --danger
        token rather than a new color. Shared by the request-level toggle
        (#btnPartsUrgent) and the per-part toggle on the add/edit sheet
-       (#btnLineUrgent). */
+       (#btnLineUrgent).
+       Bugfix: the original .on state was a faint 16%-opacity tint —
+       functionally correct (the toggle itself worked, confirmed
+       directly) but visually subtle enough that tapping it read as
+       "nothing happened." Solid fill now makes on/off unmistakable at
+       a glance. */
     .urgent-toggle.on {
-      background: rgba(248,113,113,0.16);
-      border-color: rgba(248,113,113,0.4);
-      color: var(--danger);
+      background: var(--danger);
+      border-color: var(--danger);
+      color: #fff;
+    }
+    /* Three separate html.theme-light .btn-edit rules elsewhere in
+       this file all use !important — a plain .urgent-toggle.on loses
+       to every one of them regardless of specificity or source order,
+       which is why this needed its own !important override rather
+       than just relying on the rule above. */
+    html.theme-light .urgent-toggle.on {
+      background: var(--danger) !important;
+      border-color: var(--danger) !important;
+      color: #fff !important;
     }
     .badge-urgent {
       background: rgba(248,113,113,0.12);
