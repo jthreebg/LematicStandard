@@ -505,6 +505,9 @@ const ICO = {
       document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
       const screenEl = document.getElementById(id);
       if (screenEl) screenEl.classList.add('active');
+      if (currentId && currentId !== id) {
+        try { closeBottomSheetsOnScreenChange(); } catch (e) {}
+      }
       if (id === 'screenHome') fixHomeDockPosition();
       if (id !== 'screenPunchlist') {
         const overlay = document.getElementById('pl-modal');
@@ -937,7 +940,7 @@ const ICO = {
             <span class="hj-label">Current job</span>
             <span class="hj-dates">${dateRange ? jobEsc(dateRange) : 'No dates set'}</span>
           </div>
-          <div class="hj-name">${jobEsc(job.customer || 'Untitled job')}</div>
+          <div class="hj-name">${jobEsc(job.customer || 'Untitled job')}${isSampleJob(job) ? SAMPLE_TAG_HTML : ''}</div>
           ${siteLine ? `<div class="hj-meta">${jobEsc(siteLine)}</div>` : ''}
           <div class="hj-stats" id="homeCurrentJobStats"><span><b class="n-open">0</b> Pending</span><span><b class="n-done">0</b> Complete</span><span><b class="n-ins">${inspectCount}</b> Inspection${inspectCount===1?'':'s'}</span></div>`;
         const statsEl = item.querySelector('#homeCurrentJobStats');
@@ -980,14 +983,14 @@ const ICO = {
         return;
       }
       container.innerHTML = list.slice(0, 30).map(ins => {
-        const findCount = (ins.findings || []).length;
+        const findCount = countInspectionFindings(ins);
         const statusClass = ins.status === 'Complete' ? 'badge-complete' : 'badge-draft';
         const statusLabel = ins.status === 'Complete' ? 'Complete' : 'Draft';
         const rowTone = ins.status === 'Complete' ? 'list-complete' : '';
         return `
           <div class="list-item ${rowTone}" data-id="${ins.id}">
             <div class="list-item-main" data-action="open">
-              <div class="title">${ins.customer || 'Unknown'} – ${ins.model || 'LX-8'} – ${ins.serial || 'No S/N'}</div>
+              <div class="title">${ins.customer || 'Unknown'} – ${ins.model || 'LX-8'} – ${ins.serial || 'No S/N'}${isSampleInspection(ins) ? SAMPLE_TAG_HTML : ''}</div>
               <div class="sub">${ins.technician || ''} · ${ins.date || ''} · ${findCount} finding${findCount !== 1 ? 's' : ''}</div>
             </div>
             <div class="list-item-actions">
@@ -1039,14 +1042,26 @@ const ICO = {
       const visits = (typeof loadVisits === 'function' ? loadVisits() : []) || [];
       const inspections = (typeof loadInspections === 'function' ? loadInspections() : []) || [];
       const jobs = (typeof loadJobs === 'function' ? loadJobs() : []) || [];
+      // v152 (Phase 12A Fix 2): every photo counted once — visits,
+      // inspection answers, punchlist items and parts request lines.
+      // A finding only carries a copy of its answer's photo, so findings
+      // are no longer counted a second time.
       let photoCount = 0;
       visits.forEach(v => { photoCount += (v.photos || []).length; });
       inspections.forEach(ins => {
         if (ins.results) Object.keys(ins.results).forEach(k => {
           if (ins.results[k] && (ins.results[k].photoId || ins.results[k].photoDataUrl)) photoCount += 1;
         });
-        (ins.findings || []).forEach(f => { if (f && (f.photoId || f.photoDataUrl)) photoCount += 1; });
       });
+      try {
+        const reqs = (typeof loadPartsRequests === 'function' ? loadPartsRequests() : []) || [];
+        reqs.forEach(r => {
+          ((r && r.parts) || []).forEach(p => { if (p && (p.photoId || p.photoThumb)) photoCount += 1; });
+        });
+      } catch (e) {}
+      try {
+        if (typeof window.getPunchlistPhotoCount === 'function') photoCount += (await window.getPunchlistPhotoCount()) || 0;
+      } catch (e) {}
       let used = 0;
       let quota = 0;
       let persisted = false;
@@ -1078,7 +1093,75 @@ const ICO = {
       bits.push(photoCount + ' photo' + (photoCount === 1 ? '' : 's'));
       bits.push(persisted ? 'kept by the OS' : 'ask the OS to keep');
       if (sub) sub.textContent = bits.join(' · ');
+      try { refreshSampleDataCard(); } catch (e) {}
     }
+
+    // v152 (Phase 12A Fix 6): "Remove sample data". Deletes only records
+    // carrying the app's fixed built-in sample IDs (job_sample_demo,
+    // ins_example_orangeburg, tc_sample_…) and never re-seeds them, the
+    // same way the app already treats a deleted sample. Nothing you
+    // entered is touched, even if it's linked to the sample job.
+    function sampleDataSummary() {
+      const jobN = loadJobs().filter(isSampleJob).length;
+      const insN = loadInspections().filter(isSampleInspection).length;
+      const tcN = (typeof window.tcCountSampleEntries === 'function') ? window.tcCountSampleEntries() : 0;
+      return { jobN, insN, tcN, any: !!(jobN || insN || tcN) };
+    }
+    function refreshSampleDataCard() {
+      const card = document.getElementById('sampleDataCard');
+      if (!card) return;
+      const s = sampleDataSummary();
+      card.hidden = !s.any;
+      const sub = document.getElementById('sampleDataSub');
+      if (sub && s.any) {
+        const parts = [];
+        if (s.jobN) parts.push('the sample job');
+        if (s.insN) parts.push('the example inspection');
+        if (s.tcN) parts.push(s.tcN + ' practice time entr' + (s.tcN === 1 ? 'y' : 'ies'));
+        sub.textContent = 'This device still has the app\'s built-in practice records: ' + parts.join(', ') +
+          '. They\'re marked "Sample". Removing them doesn\'t touch anything you entered.';
+      }
+    }
+    function performRemoveSampleData() {
+      lsWrite('lx8_sample_job_seeded', true);
+      lsWrite('lx8_sample_inspection_seeded', true);
+      const jobs = loadJobs();
+      const keptJobs = jobs.filter(j => !isSampleJob(j));
+      if (keptJobs.length !== jobs.length) saveJobs(keptJobs);
+      const inspections = loadInspections();
+      const keptIns = inspections.filter(i => !isSampleInspection(i));
+      if (keptIns.length !== inspections.length) saveInspections(keptIns);
+      let tcRemoved = 0;
+      try { if (typeof window.tcRemoveSampleEntries === 'function') tcRemoved = window.tcRemoveSampleEntries(); } catch (e) {}
+      if (currentInspection && isSampleInspection(currentInspection)) {
+        currentInspection = null;
+        results = {};
+        findings = [];
+      }
+      if (editingJobId === SAMPLE_JOB_ID) editingJobId = null;
+      if (detailJobId === SAMPLE_JOB_ID) detailJobId = null;
+      closeDeleteModal();
+      const left = sampleDataSummary();
+      toast(left.any ? 'Some sample data could not be removed — storage error' : 'Sample data removed');
+      try { refreshHome(); } catch (e) {}
+      try { refreshJobsList(); } catch (e) {}
+      try { refreshStorageCard(); } catch (e) {}
+    }
+    (function bindRemoveSampleData() {
+      const btn = document.getElementById('btnRemoveSampleData');
+      if (!btn) return;
+      btn.addEventListener('click', () => {
+        pendingDeleteId = 'sample-data';
+        pendingDeleteKind = 'sample-data';
+        document.getElementById('deleteModalTitle').textContent = 'Remove sample data?';
+        document.getElementById('deleteModalLabel').textContent =
+          'The built-in sample job, example inspection and practice time entries will be removed. Your own jobs, inspections, punchlists, parts requests and time are not touched.';
+        const modal = document.getElementById('deleteModal');
+        modal.classList.remove('hidden');
+        modal.classList.add('show');
+        modal.setAttribute('aria-hidden', 'false');
+      });
+    })();
 
     async function blobToUint8(blob) {
       const buf = await blob.arrayBuffer();
@@ -1369,6 +1452,38 @@ const ICO = {
     let editingJobId = null;
 
     const SAMPLE_JOB_ID = 'job_sample_demo';
+    // v152 (Phase 12A decision 2): the built-in sample job, inspection and
+    // time week are only seeded when the app is running from a test
+    // location — never on the live site (GitHub Pages). Test locations:
+    // a file opened directly, localhost / 127.0.0.1, or an in-chat
+    // preview (a sandboxed frame or a claudeusercontent.com page). Any
+    // other address counts as live. No switch to remember before
+    // deploying. Existing installs that already have samples keep them
+    // until "Remove sample data" (Settings) is used. The manual
+    // "Load example inspection" button still works everywhere.
+    function isSampleDataLocation() {
+      try {
+        const loc = window.location || {};
+        const proto = String(loc.protocol || '').toLowerCase();
+        if (proto === 'file:' || proto === 'blob:' || proto === 'data:' || proto === 'about:') return true;
+        const host = String(loc.hostname || '').toLowerCase();
+        if (!host) return true;
+        if (host === 'localhost' || host.endsWith('.localhost') || host === '127.0.0.1' || host === '[::1]' || host === '::1') return true;
+        if (host === 'claudeusercontent.com' || host.endsWith('.claudeusercontent.com')) return true;
+        if (window.origin === 'null') return true;
+        return false;
+      } catch (e) {
+        return false;
+      }
+    }
+    // v152 (Phase 12A Fix 6): the built-in sample records are recognized
+    // only by their fixed built-in IDs — never by name — so a real job
+    // that happens to share a name is never tagged or removed.
+    const SAMPLE_TC_ID_PREFIX = 'tc_sample_';
+    const SAMPLE_TAG_HTML = '<span class="sample-tag">Sample</span>';
+    function isSampleJob(job) { return !!(job && job.id === SAMPLE_JOB_ID); }
+    function isSampleInspection(ins) { return !!(ins && ins.id === 'ins_example_orangeburg'); }
+    function isSampleTimeEntry(en) { return !!(en && String(en.id || '').indexOf(SAMPLE_TC_ID_PREFIX) === 0); }
     function getSampleJob() {
       const today = new Date();
       const end = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
@@ -1405,7 +1520,7 @@ const ICO = {
         po: 'PO-DEMO-1001',
         status: 'Draft',
         results: exampleResults,
-        findings: [],
+        findings: findingsFromResults(exampleResults, templateForModel('LX-8')),
         currentSectionIndex: 1,
         createdAt: new Date().toISOString(),
         overallCondition: 'Needs Attention',
@@ -1424,7 +1539,8 @@ const ICO = {
         // Seed the demo inspection exactly once, ever. If it's missing and
         // we've already seeded it before, that means someone deleted it on
         // purpose — respect that instead of resurrecting it on next load.
-        if (!lsRead('lx8_sample_inspection_seeded', false)) {
+        // v152: and only at a test location (see isSampleDataLocation).
+        if (isSampleDataLocation() && !lsRead('lx8_sample_inspection_seeded', false)) {
           const full = (typeof window !== 'undefined' && window.__SAMPLE_INSPECTION_FULL) || getSampleInspectionRecord();
           arr.unshift(full);
           lsWrite('lx8_sample_inspection_seeded', true);
@@ -1441,7 +1557,7 @@ const ICO = {
       const idx = arr.findIndex(j => j && j.id === SAMPLE_JOB_ID);
       if (idx < 0) {
         // Same one-time-seed rule as ensureSampleInspection above.
-        if (!lsRead('lx8_sample_job_seeded', false)) {
+        if (isSampleDataLocation() && !lsRead('lx8_sample_job_seeded', false)) {
           arr.unshift(sample);
           lsWrite('lx8_sample_job_seeded', true);
         }
@@ -1889,7 +2005,7 @@ const ICO = {
         else classes.push('job-planned');
         return `<div class="${classes.join(' ')}" data-job-id="${job.id}">
           <div class="list-item-main">
-            <div class="title">${jobEsc(job.customer || 'Untitled job')}</div>
+            <div class="title">${jobEsc(job.customer || 'Untitled job')}${isSampleJob(job) ? SAMPLE_TAG_HTML : ''}</div>
             <div class="sub">${jobEsc(sub || 'No details yet')}</div>
             ${scopePreview ? `<div class="action-line">${jobEsc(scopePreview)}${(job.scope || '').length > 90 ? '…' : ''}</div>` : ''}
           </div>
@@ -2035,7 +2151,10 @@ const ICO = {
       document.querySelectorAll('#screenPartsForm [data-parts-editable]').forEach(el => el.classList.toggle('hidden', readOnly));
       const sendBtn = document.getElementById('btnPartsSend');
       if (sendBtn) sendBtn.textContent = req.status === 'unsent' ? 'Send' : 'Share again';
-      sendBtn.disabled = !(req.parts || []).length;
+      // v152 (Phase 12A Fix 5): dimmed instead of disabled, so tapping it
+      // with no parts says "Add at least one part" instead of doing nothing.
+      sendBtn.disabled = false;
+      sendBtn.classList.toggle('is-incomplete', !(req.parts || []).length);
 
       const listEl = document.getElementById('partsFormList');
       const parts = req.parts || [];
@@ -2112,7 +2231,18 @@ const ICO = {
       if (line.photoThumb) { thumb.src = line.photoThumb; thumb.classList.remove('hidden'); }
       else { thumb.src = ''; thumb.classList.add('hidden'); }
       window.__partsLineDraftPhoto = { photoId: line.photoId, photoThumb: line.photoThumb };
+      clearMissingFlag(document.getElementById('plineDesc')); // v152 (Phase 12A Fix 5)
+      refreshPartsLineRequired();
       document.getElementById('partsLineModal').classList.add('show');
+    }
+    // v152 (Phase 12A Fix 5): Save dimmed until the part has a description.
+    function refreshPartsLineRequired() {
+      const d = document.getElementById('plineDesc');
+      const btn = document.getElementById('plineSave');
+      if (!d || !btn) return;
+      const ready = !!d.value.trim();
+      btn.classList.toggle('is-incomplete', !ready);
+      if (ready) clearMissingFlag(d);
     }
     function closePartsLineModal() {
       document.getElementById('partsLineModal').classList.remove('show');
@@ -2123,7 +2253,7 @@ const ICO = {
       const qty = parseInt(document.getElementById('plineQty').value, 10) || 1;
       const partNumber = document.getElementById('plinePartNumber').value.trim();
       const notes = document.getElementById('plineNotes').value.trim();
-      if (!description) { toast('Enter a part description'); return; }
+      if (!description) { flagMissingField(document.getElementById('plineDesc')); toast('Enter a part description'); return; }
       const urgent = document.getElementById('btnLineUrgent').classList.contains('on');
       const photo = window.__partsLineDraftPhoto || {};
       if (partsLineEditingId) {
@@ -2179,6 +2309,16 @@ const ICO = {
     // fires on the right condition, not whether persistence happens.
     function savePartsFormDraft(showConfirmation) {
       if (!partsFormDraft) return true;
+      // v152 (Phase 12A Fix 5): a request that has never been saved and
+      // has no parts yet is not saved (e.g. tapping Urgent on a blank
+      // request used to save it and use up a #number). It stays on screen
+      // and is saved the moment the first part is added. A request that's
+      // already saved keeps saving normally, so deleting its last part
+      // still sticks.
+      if (!(partsFormDraft.parts || []).length &&
+          !loadPartsRequests().some(r => r && r.id === partsFormDraft.id)) {
+        return true;
+      }
       if (!partsFormDraft.seq) {
         partsFormDraft.seq = nextPartsRequestSeq();
         // The screen header shows this once assigned — update it in place
@@ -2220,7 +2360,17 @@ const ICO = {
     }
 
     async function sendPartsFormDraft() {
-      if (!partsFormDraft || !(partsFormDraft.parts || []).length) return;
+      if (!partsFormDraft) return;
+      if (!(partsFormDraft.parts || []).length) {
+        // v152 (Phase 12A Fix 5): used to do nothing at all.
+        toast('Add at least one part');
+        const fab = document.getElementById('btnAddPartsLine');
+        if (fab) {
+          fab.classList.add('field-missing');
+          setTimeout(() => fab.classList.remove('field-missing'), 1600);
+        }
+        return;
+      }
       savePartsFormDraft(false);
       const shared = await sharePartsRequest(partsFormDraft);
       if (shared && partsFormDraft.status === 'unsent') {
@@ -2287,6 +2437,10 @@ const ICO = {
       populateJobSerialSelect(jobSerialsDraft, jobSerialsDraft[0] || '');
       if (typeof renderJobSerialChips === 'function') renderJobSerialChips();
       updateJobMachineSummary();
+      // v152 (Phase 12A Fix 5)
+      clearMissingFlag(document.getElementById('jobCustomer'));
+      clearMissingFlag(document.getElementById('jobTechnician'));
+      if (typeof refreshJobFormRequired === 'function') refreshJobFormRequired();
     }
 
     let jobSerialsDraft = [];
@@ -2627,6 +2781,7 @@ const ICO = {
       }
 
       document.getElementById('jobDetailTitle').textContent = job.customer || 'Untitled job';
+      if (isSampleJob(job)) document.getElementById('jobDetailTitle').insertAdjacentHTML('beforeend', SAMPLE_TAG_HTML);
       const subParts = [job.site, job.technician].filter(Boolean);
       document.getElementById('jobDetailSub').textContent = subParts.join(' · ') || '';
       const badge = document.getElementById('jobDetailStatusBadge');
@@ -2673,13 +2828,13 @@ const ICO = {
         document.getElementById('jdInspectCount').textContent =
           (draftN ? draftN + ' open' : '') + (draftN && doneN ? ' · ' : '') + (doneN ? doneN + ' complete' : '') || (inspections.length + ' total');
         inspectList.innerHTML = inspections.slice(0, 20).map(ins => {
-          const findCount = (ins.findings || []).length;
+          const findCount = countInspectionFindings(ins);
           const statusClass = ins.status === 'Complete' ? 'badge-complete' : 'badge-draft';
           const statusLabel = ins.status === 'Complete' ? 'Complete' : 'Draft';
           const rowTone = ins.status === 'Complete' ? 'list-complete' : '';
           return `<div class="list-item ${rowTone}" data-id="${ins.id}">
             <div class="list-item-main" data-action="open">
-              <div class="title">${jobEsc(ins.customer || 'Unknown')} – ${jobEsc(ins.model || 'LX-8')} – ${jobEsc(ins.serial || 'No S/N')}</div>
+              <div class="title">${jobEsc(ins.customer || 'Unknown')} – ${jobEsc(ins.model || 'LX-8')} – ${jobEsc(ins.serial || 'No S/N')}${isSampleInspection(ins) ? SAMPLE_TAG_HTML : ''}</div>
               <div class="sub">${jobEsc(ins.technician || '')} · ${jobEsc(ins.date || '')} · ${findCount} finding${findCount !== 1 ? 's' : ''}</div>
             </div>
             <div class="list-item-actions">
@@ -2941,13 +3096,49 @@ const ICO = {
       setHeader('New Job');
     }
 
+    // v152 (Phase 12A Fix 5): required fields are marked (*), Save is
+    // dimmed until they're filled, and tapping Save anyway outlines the
+    // first empty field and scrolls it into view instead of only
+    // flashing a toast. Save stays tappable on purpose, so the tap can
+    // point at what's missing. The outline clears as soon as you type.
+    function flagMissingField(el) {
+      if (!el) return;
+      el.classList.add('field-missing');
+      try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { try { el.scrollIntoView(); } catch (e2) {} }
+      if (typeof el.focus === 'function' && /^(INPUT|TEXTAREA)$/.test(el.tagName || '')) {
+        try { el.focus({ preventScroll: true }); } catch (e) { try { el.focus(); } catch (e2) {} }
+      }
+    }
+    function clearMissingFlag(el) {
+      if (el) el.classList.remove('field-missing');
+    }
+    function refreshJobFormRequired() {
+      const c = document.getElementById('jobCustomer');
+      const t = document.getElementById('jobTechnician');
+      const btn = document.getElementById('btnSaveJob');
+      if (!c || !t || !btn) return;
+      const ready = !!(c.value.trim() && t.value.trim());
+      btn.classList.toggle('is-incomplete', !ready);
+      if (c.value.trim()) clearMissingFlag(c);
+      if (t.value.trim()) clearMissingFlag(t);
+    }
+    ['jobCustomer', 'jobTechnician'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener('input', refreshJobFormRequired);
+        el.addEventListener('change', refreshJobFormRequired);
+      }
+    });
+
     function saveJobFromForm() {
       const customer = document.getElementById('jobCustomer').value.trim();
       const tech = document.getElementById('jobTechnician').value.trim();
       const scope = document.getElementById('jobScope').value.trim();
       const so = document.getElementById('jobSO').value.trim();
       if (!customer || !tech) {
-        toast('Please fill Customer and Technician');
+        refreshJobFormRequired();
+        flagMissingField(document.getElementById(!customer ? 'jobCustomer' : 'jobTechnician'));
+        toast(!customer && !tech ? 'Please fill Customer and Technician' : (!customer ? 'Please fill Customer' : 'Please fill Technician'));
         return;
       }
       const payload = {
@@ -3463,6 +3654,7 @@ const ICO = {
       else if (kind === 'parts-line') run(window.performDeletePartsLine || performDeletePartsLine, id);
       else if (kind === 'timecard') run(window.performDeleteTimecard, id);
       else if (kind === 'inspect-photo') run(window.performDeleteInspectPhoto || performDeleteInspectPhoto, id);
+      else if (kind === 'sample-data') run(performRemoveSampleData, id); // v152 (Phase 12A Fix 6)
       else run(window.performDeleteInspection || performDeleteInspection, id);
     });
 
@@ -3591,6 +3783,7 @@ const ICO = {
       findings = [];
       currentSectionIndex = 1;
       editingInspectionId = null;
+      setActiveMachine(currentInspection.model || 'LX-8');
       const list = loadInspections().filter(i => i.id !== currentInspection.id);
       list.unshift(currentInspection);
       saveInspections(list);
@@ -3746,6 +3939,8 @@ const ICO = {
     if (plineCancel) plineCancel.addEventListener('click', closePartsLineModal);
     const plineSave = document.getElementById('plineSave');
     if (plineSave) plineSave.addEventListener('click', savePartsLineModal);
+    const plineDescEl = document.getElementById('plineDesc');
+    if (plineDescEl) plineDescEl.addEventListener('input', refreshPartsLineRequired); // v152 (Phase 12A Fix 5)
     const plinePhotoInput = document.getElementById('plinePhotoInput');
     if (plinePhotoInput) plinePhotoInput.addEventListener('change', (e) => {
       const file = e.target.files && e.target.files[0];
@@ -4983,17 +5178,30 @@ const ICO = {
       if (prevBtn) prevBtn.style.visibility = (currentSectionIndex === 0 && currentItemIndex === 0) ? 'hidden' : 'visible';
     }
 
-    function updateFindings() {
-      findings = [];
-      if (!APP_DATA || !APP_DATA.items) return;
-      Object.keys(results).forEach(idStr => {
+    // v152 (Phase 12A Fix 1): the findings rule now lives in one place,
+    // findingsFromResults(), so the editor (updateFindings) and the list
+    // counts (countInspectionFindings) can never disagree. The list
+    // counts used to read the saved ins.findings array, which is only
+    // rebuilt while an inspection is open — so a seeded, restored or
+    // older inspection showed "0 findings" until it was opened.
+    // templateForModel() uses exactly the same fallback as
+    // setActiveMachine(), so a count is always taken against the
+    // inspection's own machine checklist, never whichever one is active.
+    function templateForModel(model) {
+      const key = model || 'LX-8';
+      return (window.MACHINE_TEMPLATES && (window.MACHINE_TEMPLATES[key] || window.MACHINE_TEMPLATES['LX-8'])) || window.EMBEDDED_DATA || null;
+    }
+    function findingsFromResults(resultsObj, pack) {
+      const out = [];
+      if (!pack || !pack.items || !resultsObj) return out;
+      Object.keys(resultsObj).forEach(idStr => {
         const itemId = parseInt(idStr, 10);
-        const item = APP_DATA.items.find(i => i.item_id === itemId);
+        const item = pack.items.find(i => i.item_id === itemId);
         if (!item) return;
-        const r = results[itemId];
+        const r = resultsObj[itemId];
         if (!r) return;
         if (showsFindingPanel(item, r.condition)) {
-          findings.push({
+          out.push({
             item_id: itemId,
             section: item.section,
             item_name: item.inspection_item,
@@ -5007,6 +5215,19 @@ const ICO = {
           });
         }
       });
+      return out;
+    }
+    function countInspectionFindings(ins) {
+      if (!ins) return 0;
+      const pack = templateForModel(ins.model);
+      if (!pack || !pack.items || !pack.items.length) return (ins.findings || []).length;
+      return findingsFromResults(ins.results || {}, pack).length;
+    }
+
+    function updateFindings() {
+      findings = [];
+      if (!APP_DATA || !APP_DATA.items) return;
+      findings = findingsFromResults(results, APP_DATA);
     }
 
     document.getElementById('btnNextSection').addEventListener('click', () => {
@@ -5402,10 +5623,10 @@ const ICO = {
         if (has('deleteModal')) { closeDeleteModal(); closed = true; }
         if (has('machineModal')) { closeMachineModal(); closed = true; }
         if (has('jobPickerModal')) { closeJobPicker(); closed = true; }
-        if (has('plExportSheet')) { closePlExportSheet(); closed = true; }
+        if (has('plExportSheet')) { window.closePlExportSheet(); closed = true; }
         if (has('saveSheet')) { closeSaveSheet(); closed = true; }
-        if (has('tcWeekPickSheet')) { tcCloseWeekPick(); closed = true; }
-        if (has('tcExportSheet')) { tcCloseExportSheet(); closed = true; }
+        if (has('tcWeekPickSheet')) { window.tcCloseWeekPick(); closed = true; }
+        if (has('tcExportSheet')) { window.tcCloseExportSheet(); closed = true; }
         if (has('plLinkJobSheet')) { closePunchlistLinkSheet(); closed = true; }
         if (has('partsLineModal')) { closePartsLineModal(); closed = true; }
         if (has('partsShareSheet')) { closePartsShareSheet(); closed = true; }
@@ -5430,6 +5651,29 @@ const ICO = {
         if (document.body.classList.contains('search-open')) { closeSearch(); closed = true; }
       } catch (e) {}
       return closed;
+    }
+    // v152 (Phase 12A Fix 4): called by showScreen() whenever the screen
+    // actually changes, so a bottom sheet can't be left sitting on top of
+    // the next screen when you leave by Home, the bottom nav or a search
+    // result instead of the header Back button. Uses the same close
+    // functions Back uses; each one is purely visual (no data touched).
+    // Each is isolated so one failing can't stop the others.
+    function closeBottomSheetsOnScreenChange() {
+      const isOpen = (id) => {
+        const el = document.getElementById(id);
+        return !!(el && el.classList.contains('show'));
+      };
+      const tryClose = (id, fn) => {
+        if (!isOpen(id)) return;
+        try { if (typeof fn === 'function') fn(); } catch (e) {}
+      };
+      tryClose('plExportSheet', window.closePlExportSheet);
+      tryClose('saveSheet', typeof closeSaveSheet === 'function' ? closeSaveSheet : null);
+      tryClose('tcExportSheet', window.tcCloseExportSheet);
+      tryClose('tcWeekPickSheet', window.tcCloseWeekPick);
+      tryClose('plLinkJobSheet', typeof closePunchlistLinkSheet === 'function' ? closePunchlistLinkSheet : null);
+      tryClose('partsShareSheet', typeof closePartsShareSheet === 'function' ? closePartsShareSheet : null);
+      tryClose('plStartSheet', typeof closePunchlistStartSheet === 'function' ? closePunchlistStartSheet : null);
     }
 
     document.getElementById('btnHeaderBack').addEventListener('click', () => {
@@ -7221,6 +7465,12 @@ const IDB_NAME = "FieldPunchlistDB";
       return null;
     }
 
+    // v153: the built-in example punchlists (Aryzta Australia, Epi) follow
+    // the same rule as the sample job/inspection/time week — test
+    // locations only, never the live site. See isSampleDataLocation().
+    function plUseSamplePunchlists() {
+      return (typeof isSampleDataLocation === 'function') ? isSampleDataLocation() : true;
+    }
     async function plLoadData() {
       try {
         let saved = await plMigrateFromOldDatabase();
@@ -7235,10 +7485,25 @@ const IDB_NAME = "FieldPunchlistDB";
           } catch (e) {}
         }
         if (saved && saved.jobs && saved.currentJob) data = saved;
+        else if (!plUseSamplePunchlists()) {
+          // v153: live site. Never create the example punchlists, and never
+          // swap saved punchlists for them. Keeps whatever was saved (even
+          // with no current list picked, e.g. after deleting every list —
+          // which used to bring Aryzta/Epi back); otherwise starts empty,
+          // the same empty state the app already uses once every list is
+          // deleted.
+          // plMigrateFromOldDatabase() also reports "nothing saved" when no
+          // current list is picked, so re-read the stored copy directly and
+          // only write an empty start when nothing is stored at all.
+          let stored = saved;
+          if (!stored) stored = await idbGetKv(PL_CONSOLIDATED_KEY).catch(() => null);
+          if (stored && stored.jobs && typeof stored.jobs === 'object') data = stored;
+          else { data = { jobs: {}, currentJob: '' }; await plSaveData(); }
+        }
         else { data = JSON.parse(JSON.stringify(defaultData)); await plSaveData(); }
         try { migratePunchlistJobKeys(); } catch (e) {}
       } catch (e) {
-        data = JSON.parse(JSON.stringify(defaultData));
+        data = plUseSamplePunchlists() ? JSON.parse(JSON.stringify(defaultData)) : { jobs: {}, currentJob: '' };
       }
     }
 
@@ -8413,6 +8678,17 @@ const IDB_NAME = "FieldPunchlistDB";
       });
       return { total, complete, open: Math.max(0, total - complete) };
     };
+    // v152 (Phase 12A Fix 2): read-only count of punchlist item photos
+    // (item.photo), for the Settings "On this device" line. Never writes.
+    window.getPunchlistPhotoCount = async function() {
+      await plLoadData();
+      if (!data || !data.jobs) return 0;
+      let n = 0;
+      Object.keys(data.jobs).forEach(k => {
+        (data.jobs[k] || []).forEach(item => { if (item && item.photo) n += 1; });
+      });
+      return n;
+    };
     window.searchPunchlistItems = async function(q) {
       await plLoadData();
       const needle = String(q || "").trim().toLowerCase();
@@ -9302,6 +9578,10 @@ const IDB_NAME = "FieldPunchlistDB";
       sheet.hidden = true;
       sheet.setAttribute('hidden', '');
     }
+    // v152 (Phase 12A Fix 4): this function lives inside its own module,
+    // so the header Back button's closeOpenOverlaysForBack() could not
+    // reach it — the call failed silently and the sheet stayed open.
+    window.closePlExportSheet = closePlExportSheet;
     document.getElementById("btn-export").addEventListener("click", () => {
       openPlExportSheet();
     });
@@ -9525,6 +9805,8 @@ const IDB_NAME = "FieldPunchlistDB";
     }
 
     function tcEnsureSampleWeek() {
+      // v152 (Phase 12A decision 2): never seeded on the live site.
+      if (typeof isSampleDataLocation === 'function' && !isSampleDataLocation()) return;
       try {
         if (lsRead('lx8_tc_sample_seeded', false)) return;
       } catch (e) {}
@@ -9795,7 +10077,24 @@ const IDB_NAME = "FieldPunchlistDB";
         });
       }
     }
+    // v152 (Phase 12A Fix 6): the week card totals every job; this line
+    // shows only the job picked in the dropdown, this calendar week, so
+    // the two can't be mistaken for each other. Read-only.
+    function tcRenderJobWeekLine() {
+      const el = document.getElementById('tcJobWeekLine');
+      const sel = document.getElementById('tcJobSelect');
+      if (!el) return;
+      const jobId = sel ? sel.value : '';
+      const jobs = (typeof loadJobs === 'function' ? loadJobs() : []) || [];
+      const job = jobId ? jobs.find(j => j && String(j.id) === String(jobId)) : null;
+      if (!job) { el.hidden = true; el.textContent = ''; return; }
+      const hrs = tcEntriesForWeek(0).filter(en => tcEntryMatchesJob(en, job, jobs))
+        .reduce((sum, en) => sum + tcEntryHours(en), 0);
+      el.innerHTML = 'This job: <strong>' + (Math.round(hrs * 100) / 100).toFixed(2) + ' hrs</strong> this week';
+      el.hidden = false;
+    }
     function tcRenderWeek() {
+      try { tcRenderJobWeekLine(); } catch (e) {}
       tcRenderWeekStrip();
       if (document.getElementById('screenTimeWeek') && document.getElementById('screenTimeWeek').classList.contains('active')) {
         tcRenderWeekDetail();
@@ -9821,7 +10120,7 @@ const IDB_NAME = "FieldPunchlistDB";
       const fmt = n => (Math.round(n * 100) / 100).toFixed(2);
       const t = tcWeekTotals(offset);
       const label = tcWeekLabelText(offset);
-      const kicker = offset === 0 ? 'This week' : (offset === -1 ? 'Last week' : (offset === 1 ? 'Next week' : 'Week'));
+      const kicker = (offset === 0 ? 'This week' : (offset === -1 ? 'Last week' : (offset === 1 ? 'Next week' : 'Week'))) + ' · All jobs'; // v152 (Phase 12A Fix 6)
       return (
         '<div class="tc-week-card" data-offset="' + offset + '">' +
           '<div class="tc-week-kicker">' + kicker + '</div>' +
@@ -10038,7 +10337,7 @@ function tcRenderEntryList(listEl, offset) {
         const dateStr = tcFormatLongDate(en.date || en.clockIn);
         return '<div class="tc-entry' + (open ? ' open-shift' : '') + '" data-id="' + en.id + '">' +
           '<div class="tc-entry-main"><div class="tc-entry-title">' + String(dateStr).replace(/</g,'&lt;') + '</div>' +
-          '<div class="tc-entry-sub">' + typeLabel + '</div></div>' +
+          '<div class="tc-entry-sub">' + typeLabel + (isSampleTimeEntry(en) ? SAMPLE_TAG_HTML : '') + '</div></div>' +
           '<div class="tc-entry-hours">' + h.toFixed(2) + '</div></div>';
       }).join('');
       listEl.querySelectorAll('.tc-entry').forEach(el => {
@@ -10093,6 +10392,7 @@ function tcRenderEntryList(listEl, offset) {
         scrim.setAttribute('hidden', '');
       }
     }
+    window.tcCloseWeekPick = tcCloseWeekPick; // v152 (Phase 12A Fix 4)
     function tcOpenWeekPick() {
       const sheet = document.getElementById('tcWeekPickSheet');
       const list = document.getElementById('tcWeekPickList');
@@ -10454,6 +10754,26 @@ function tcRenderEntryList(listEl, offset) {
       toast('Deleted');
     }
     window.performDeleteTimecard = performDeleteTimecard;
+    // v152 (Phase 12A Fix 6): removes only the built-in sample time
+    // entries (IDs starting tc_sample_). Returns how many were removed.
+    function tcRemoveSampleEntries() {
+      try { lsWrite('lx8_tc_sample_seeded', true); } catch (e) {}
+      tcLoad();
+      const before = (tcState.entries || []).length;
+      tcState.entries = (tcState.entries || []).filter(en => !isSampleTimeEntry(en));
+      const removed = before - tcState.entries.length;
+      if (tcState.active && isSampleTimeEntry(tcState.active)) tcState.active = null;
+      if (removed) tcSave();
+      return removed;
+    }
+    window.tcRemoveSampleEntries = tcRemoveSampleEntries;
+    window.tcCountSampleEntries = function() {
+      try {
+        const raw = lsRead('lx8_timecards', null);
+        const list = (raw && Array.isArray(raw.entries)) ? raw.entries : [];
+        return list.filter(isSampleTimeEntry).length;
+      } catch (e) { return 0; }
+    };
     window.tcDeleteEdit = tcDeleteEdit;
 
     function tcCloseNameSheet() {
@@ -10658,6 +10978,8 @@ function tcRenderEntryList(listEl, offset) {
       if (sheet) { sheet.classList.remove('show'); sheet.hidden = true; sheet.setAttribute('hidden',''); }
       if (scrim) { scrim.classList.remove('show'); scrim.hidden = true; scrim.setAttribute('hidden',''); }
     }
+    // v152 (Phase 12A Fix 4): same reachability fix as closePlExportSheet.
+    window.tcCloseExportSheet = tcCloseExportSheet;
 
     function tcExportSummary() {
       const list = document.getElementById('tcExportSummary');
@@ -10865,6 +11187,11 @@ function tcRenderEntryList(listEl, offset) {
       };
       once('btnTcClockIn', tcClockIn);
       once('btnTcClockOut', tcClockOut);
+      const tcJobSelEl = document.getElementById('tcJobSelect');
+      if (tcJobSelEl && tcJobSelEl.dataset.tcWeekLineBound !== '1') {
+        tcJobSelEl.dataset.tcWeekLineBound = '1';
+        tcJobSelEl.addEventListener('change', () => { try { tcRenderJobWeekLine(); } catch (e) {} });
+      }
       
       once('btnTcExport', tcOpenExportSheet);
       once('btnTcAddManual', tcOpenManual);
@@ -11086,7 +11413,17 @@ function tcRenderEntryList(listEl, offset) {
         if (tag === 'textarea' || el.isContentEditable) return true;
         return !!(el.closest && el.closest('textarea, input[type="text"], input[type="search"], input[type="number"], input[type="tel"], input[type="email"], input[type="date"], [contenteditable="true"]'));
       };
-      const apply = (hide) => {
+      // v152 (Phase 12A Fix 3): bars are only hidden to get them out from
+      // under an on-screen keyboard. A device whose main pointer is a
+      // mouse or trackpad (desktop PC, Mac) has no on-screen keyboard, so
+      // there the bars always stay visible. Checked on every call, so it
+      // follows a change (e.g. a 2-in-1 switching to tablet mode).
+      // Browsers without matchMedia keep the v151 behavior.
+      const hasFinePointer = () => {
+        try { return !!(window.matchMedia && window.matchMedia('(pointer: fine)').matches); } catch (e) { return false; }
+      };
+      const apply = (hideRequested) => {
+        const hide = !!hideRequested && !hasFinePointer();
         document.body.classList.toggle('kb-open', !!hide);
         document.querySelectorAll(SEL).forEach((bar) => {
           bar.style.setProperty('display', hide ? 'none' : 'flex', 'important');

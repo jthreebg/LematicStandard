@@ -33,7 +33,7 @@
       if(light)document.documentElement.classList.add('theme-light');
     }catch(e){}})();
   </script>
-  <link rel="stylesheet" href="app.css?v=151" />
+  <link rel="stylesheet" href="app.css?v=153" />
   
 
 
@@ -168,6 +168,7 @@
         <label for="tcJobSelect">Job</label>
         <select id="tcJobSelect"><option value="">— No job —</option></select>
       </div>
+      <div class="tc-job-week" id="tcJobWeekLine" hidden></div>
       <div class="btn-row">
         <button type="button" class="btn btn-primary" id="btnTcClockIn">Clock In</button>
         <button type="button" class="btn btn-outline" id="btnTcClockOut" disabled>Clock Out</button>
@@ -320,6 +321,15 @@
       <div class="storage-actions">
         <button type="button" class="btn" id="btnBackupZip">Backup</button>
         <button type="button" class="btn" id="btnRestoreZip">Restore</button>
+      </div>
+    </div>
+    <!-- v152 (Phase 12A Fix 6) — shown only while this device still has
+         the built-in sample job / inspection / time week. -->
+    <div class="storage-card" id="sampleDataCard" hidden>
+      <div class="storage-kicker">Sample data</div>
+      <div class="storage-sub" id="sampleDataSub">This device still has the app's built-in practice records.</div>
+      <div class="storage-actions">
+        <button type="button" class="btn" id="btnRemoveSampleData">Remove sample data</button>
       </div>
     </div>
     <!-- Phase 6 — read-only diagnostic only. No delete/merge/repair
@@ -631,8 +641,8 @@
       <div class="modal-body">
         <img id="plinePhotoPreview" class="parts-line-photo-preview hidden" alt="" />
         <div class="form-group">
-          <label for="plineDesc">Part</label>
-          <input type="text" id="plineDesc" placeholder="e.g. 24V solenoid valve" />
+          <label for="plineDesc">Part<span class="req-mark" aria-hidden="true">*</span></label>
+          <input type="text" id="plineDesc" aria-required="true" placeholder="e.g. 24V solenoid valve" />
         </div>
         <div class="form-group">
           <label for="plineNotes">Notes</label>
@@ -678,9 +688,9 @@
     <div class="card">
       <div class="form-group">
         <div class="card-label-row">
-          <label for="jobCustomer">Customer</label>
+          <label for="jobCustomer">Customer<span class="req-mark" aria-hidden="true">*</span></label>
         </div>
-        <input type="text" id="jobCustomer" placeholder="e.g. ABC Bakery – Plant 2" list="jobCustomerList" />
+        <input type="text" id="jobCustomer" aria-required="true" placeholder="e.g. ABC Bakery – Plant 2" list="jobCustomerList" />
         <datalist id="jobCustomerList"></datalist>
       </div>
       <div class="form-group">
@@ -715,8 +725,8 @@
         <input type="text" id="jobContact" placeholder="On-site contact name" />
       </div>
       <div class="form-group">
-        <label>Technician Name</label>
-        <input type="text" id="jobTechnician" placeholder="Your name" />
+        <label for="jobTechnician">Technician Name<span class="req-mark" aria-hidden="true">*</span></label>
+        <input type="text" id="jobTechnician" aria-required="true" placeholder="Your name" />
       </div>
       <div class="form-row job-date-row">
         <div class="form-group">
@@ -1146,8 +1156,8 @@
   
   
   
-  <script src="qrcode.min.js?v=151" defer></script>
-  <script src="templates.js?v=151" defer></script>
-  <script src="app.js?v=151" defer></script>
+  <script src="qrcode.min.js?v=153" defer></script>
+  <script src="templates.js?v=153" defer></script>
+  <script src="app.js?v=153" defer></script>
 </body>
 </html>

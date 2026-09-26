@@ -1571,6 +1571,28 @@
         0 0 0 4px #f9fdff;
     }
 
+    /* v152 (Phase 12A Fix 5/6): required-field marks, a dimmed Save/Send
+       while required fields are empty (still tappable, so the tap can
+       point at what's missing), and the small "Sample" tag. */
+    .btn.is-incomplete { opacity: 0.45; box-shadow: none; }
+    .req-mark { color: var(--brand-red); font-weight: 700; margin-left: 3px; }
+    input.field-missing,
+    textarea.field-missing {
+      border-color: var(--brand-red) !important;
+      box-shadow: 0 0 0 2px var(--brand-red-soft) !important;
+    }
+    .pf-add-fab.field-missing { box-shadow: 0 0 0 3px var(--brand-red) !important; }
+    .sample-tag {
+      display: inline-block; vertical-align: middle;
+      margin-left: 6px; padding: 1px 7px;
+      border-radius: 999px; border: 1px solid var(--accent);
+      color: var(--accent); background: transparent;
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em;
+      text-transform: uppercase; line-height: 1.5;
+    }
+    .tc-job-week { margin: 2px 0 10px; font-size: 0.85rem; color: var(--muted); }
+    .tc-job-week strong { color: var(--text); font-weight: 700; }
+
     .btn-primary {
       background: #e8eef2;
       color: #0d0d0f;
