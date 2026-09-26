@@ -43,7 +43,42 @@ const ICO = {
       return APP_DATA;
     }
 
-    // ========== STORAGE (IndexedDB + localStorage fallback) ==========
+    // ========== STORE (IndexedDB + localStorage fallback) ==========
+    // Phase 14: single storage section. Every persisted record kind (jobs,
+    // inspections, visits, customers, sites, serials, parts requests, time
+    // cards, punchlists) and photos is read/written ONLY from inside this
+    // section — via the primitives below (lsRead/lsWrite/idb*) and the
+    // STORE.load(kind)/STORE.save(kind, value)/STORE.getPhoto/STORE.putPhoto/
+    // STORE.getAllPhotos/STORE.deletePhotos dispatcher further down. Every
+    // existing load*/save* function elsewhere in the file (loadJobs,
+    // saveJobs, tcLoad, tcSave, plLoadData, plSaveData, etc.) keeps its
+    // existing name and signature and calls into STORE for the actual
+    // persistence step; the business logic each of those functions also
+    // does (identity resolution, sample seeding, debounced durable-persist
+    // scheduling, ...) stays exactly where it already was. This is a pure
+    // reorganization: every localStorage key, IndexedDB database/store
+    // name, and record shape below is unchanged from before Phase 14, so a
+    // future sync layer (Phase 16) has one place to plug into.
+    //
+    // Three narrow, deliberate exceptions are NOT routed through STORE,
+    // and are left exactly as they were (see the Phase 14 report for the
+    // full search proving this): the `lx8_last_punchlist`, `lx8_profile`
+    // and `lx8_theme` keys, which are not persisted record data (they're
+    // small UI-state/preference values, not one of the nine data kinds),
+    // and the one-time legacy `FieldPunchlistDB` migration read
+    // (openDB/idbGet below, used only by plMigrateFromOldDatabase), kept
+    // as its own isolated, already-self-contained fallback.
+    //
+    // Inspections and visits don't route their durable IndexedDB step
+    // through a STORE.save/STORE.load call at all (only their immediate
+    // localStorage mirror does, via STORE.save('inspections', ...) /
+    // STORE.load('inspections')) — their real durable write is the shared,
+    // debounced persistAllStores() below, and their real boot-time read is
+    // bootStorage() below. Both functions live inside this same STORE
+    // section (they are not "outside STORE" in the sense the rest of this
+    // comment means), read/write the same `kv` object store as everything
+    // else here, and were already correlated/combined for visits+
+    // inspections before Phase 14 — untouched by this reorganization.
     const LX_DB_NAME = 'lematic-lx8';
     const LX_DB_VER = 1;
     const storeMem = {
@@ -136,6 +171,192 @@ const ICO = {
         req.onerror = () => reject(req.error);
       })).catch(() => []);
     }
+
+    // ----- STORE: single load(kind)/save(kind, value) dispatcher -----
+    // Each case below reproduces — unchanged — exactly the read/write steps
+    // that kind's own load*/save* function (elsewhere in the file) used to
+    // perform directly. Nothing here is "unified" or "improved": the
+    // per-kind quirks (localStorage-only vs. localStorage+kv-mirror,
+    // time cards' object shape instead of an array, punchlist's own
+    // load/save pair, jobs' write-retry) are preserved exactly as they
+    // were, because changing any of them would be a behavior change this
+    // phase is explicitly not allowed to make.
+    const STORE = {
+      load(kind, opts) {
+        switch (kind) {
+          case 'jobs': {
+            const fromLs = lsRead('lx8_jobs', []);
+            const mem = Array.isArray(storeMem.jobs) ? storeMem.jobs : [];
+            return mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+          }
+          case 'customers': {
+            const fromLs = lsRead('lx8_customers', []);
+            const mem = Array.isArray(storeMem.customers) ? storeMem.customers : [];
+            return mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+          }
+          case 'sites': {
+            const fromLs = lsRead('lx8_sites', []);
+            const mem = Array.isArray(storeMem.sites) ? storeMem.sites : [];
+            return mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+          }
+          case 'serials': {
+            const fromLs = lsRead('lx8_serials', []);
+            const mem = Array.isArray(storeMem.serials) ? storeMem.serials : [];
+            return mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+          }
+          case 'partsRequests': {
+            const fromLs = lsRead('lx8_parts_requests', []);
+            const mem = Array.isArray(storeMem.partsRequests) ? storeMem.partsRequests : [];
+            return mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+          }
+          case 'inspections':
+            // loadInspections() only ever calls this before boot has
+            // populated storeMem.inspections; after that it returns the
+            // in-memory copy itself and never reaches this case. Matches
+            // today's loadInspections() exactly (it doesn't check kv
+            // either — only bootStorage does, on its own, see below).
+            return lsRead('lx8_inspections', []);
+          case 'timecards':
+            // {entries, active} object, not an array — unlike every kind
+            // above. No IndexedDB mirror. Known gap, not fixed here — see
+            // STORE.save('timecards') below.
+            return lsRead('lx8_timecards', null);
+          case 'visits':
+            // The old standalone "Visit" flow was already removed before
+            // Phase 14; nothing calls this today (loadVisits() is a fixed
+            // stub kept only for old-backup-zip compatibility — see below).
+            // bootStorage() does its own correlated kv+localStorage read
+            // together with inspections, for one shared IndexedDB round
+            // trip; that logic is untouched and lives where it always has.
+            // Provided here only so the STORE.load(kind) contract is
+            // complete for all nine kinds.
+            return Array.isArray(storeMem.visits) ? storeMem.visits : lsRead('lx8_visits', []);
+          case 'punchlist': {
+            // The actual kv 'punchlist_main' read + localStorage LEGACY_KEY
+            // ('field_punchlist_v3') fallback, upgrade-write and toast —
+            // exactly what plLoadData() used to do directly. The Punchlist
+            // module's own migration chain from the legacy FieldPunchlistDB
+            // database (openDB/idbGet, plMigrateFromOldDatabase) stays where
+            // it is and is untouched; it calls this with
+            // { skipLegacyFallback: true } for its own internal
+            // "already migrated?" kv-only check, so that check never races
+            // ahead of the FieldPunchlistDB migration it's guarding (this
+            // fallback must only run *after* that migration has already
+            // been tried and found nothing).
+            const skipLegacy = !!(opts && opts.skipLegacyFallback);
+            return (async () => {
+              const kv = await idbGetKv('punchlist_main').catch(() => null);
+              if (kv) return kv;
+              if (skipLegacy) return null;
+              const legacy = lsRead('field_punchlist_v3', null);
+              if (legacy) {
+                try { await idbSetKv('punchlist_main', legacy); } catch (e) {}
+                toast('Data upgraded to larger storage');
+              }
+              return legacy;
+            })();
+          }
+          default:
+            throw new Error('STORE.load: unknown kind "' + kind + '"');
+        }
+      },
+      save(kind, value, opts) {
+        switch (kind) {
+          case 'jobs': {
+            // Preserves the existing retry-then-return-early quirk: if the
+            // first write fails but an immediate retry succeeds, this
+            // returns true WITHOUT mirroring to kv that time — exactly as
+            // saveJobs() already did before this phase.
+            const ok = lsWrite('lx8_jobs', value);
+            if (!ok) {
+              try {
+                if (lsWrite('lx8_jobs', value)) return true;
+              } catch (e) {}
+            }
+            try { idbSetKv('jobs', value); } catch (e) {}
+            // Known gap (Phase 16): idbSetKv above is a write-only mirror.
+            // STORE.load('jobs') above never reads it back — if
+            // localStorage fails or is cleared, that IndexedDB copy is
+            // currently unreachable. Same for customers/sites/serials/
+            // partsRequests below. Not fixed in this phase; preserved
+            // exactly as it already behaved.
+            return ok;
+          }
+          case 'customers': {
+            const ok = lsWrite('lx8_customers', value);
+            try { idbSetKv('customers', value); } catch (e) {}
+            return ok;
+          }
+          case 'sites': {
+            const ok = lsWrite('lx8_sites', value);
+            try { idbSetKv('sites', value); } catch (e) {}
+            return ok;
+          }
+          case 'serials': {
+            const ok = lsWrite('lx8_serials', value);
+            try { idbSetKv('serials', value); } catch (e) {}
+            return ok;
+          }
+          case 'partsRequests': {
+            const ok = lsWrite('lx8_parts_requests', value);
+            try { idbSetKv('parts_requests', value); } catch (e) {}
+            return ok;
+          }
+          case 'inspections':
+            // saveInspections() also schedules the debounced durable
+            // IndexedDB persist (schedulePersist -> persistAllStores,
+            // which writes visits+inspections together); that orchestration
+            // is untouched and lives where it always has. This case is
+            // only the same immediate localStorage mirror write
+            // saveInspections() already did directly.
+            return lsWrite('lx8_inspections', value);
+          case 'timecards':
+            // No IndexedDB mirror for time cards today, unlike the other
+            // kinds above. Known gap (Phase 16): preserved exactly as-is,
+            // not added here.
+            return lsWrite('lx8_timecards', value);
+          case 'visits':
+            // See STORE.load('visits') above — provided for contract
+            // completeness; the real, correlated write path visits share
+            // with inspections is persistAllStores(), untouched.
+            return lsWrite('lx8_visits', value);
+          case 'punchlist': {
+            // The actual kv 'punchlist_main' write + localStorage LEGACY_KEY
+            // fallback-on-failure-with-toast — exactly what plSaveData() used
+            // to do directly (its body is now just `return
+            // STORE.save('punchlist', data);`).
+            //
+            // { rawKvOnly: true } is used only by the Punchlist module's own
+            // FieldPunchlistDB-migration write inside plMigrateFromOldDatabase:
+            // that write must still throw on failure exactly like the raw
+            // idbSetKv() call it replaces (its own surrounding try/catch is
+            // what decides whether the migration succeeded), not silently
+            // fall back to localStorage the way a normal user-triggered save
+            // does below.
+            if (opts && opts.rawKvOnly) return idbSetKv('punchlist_main', value);
+            return (async () => {
+              try {
+                await idbSetKv('punchlist_main', value);
+                return true;
+              } catch (e) {
+                if (lsWrite('field_punchlist_v3', value)) {
+                  toast('Saved (fallback mode)');
+                  return true;
+                }
+                toast('Storage full – remove photos or old jobs');
+                return false;
+              }
+            })();
+          }
+          default:
+            throw new Error('STORE.save: unknown kind "' + kind + '"');
+        }
+      },
+      getPhoto(id) { return idbGetPhoto(id); },
+      putPhoto(rec) { return idbPutPhoto(rec); },
+      getAllPhotos() { return idbGetAllPhotos(); },
+      deletePhotos(ids) { return idbDeletePhotos(ids); }
+    };
 
     function dataUrlToBlob(dataUrl) {
       try {
@@ -426,7 +647,7 @@ const ICO = {
       // The debounced IndexedDB persist is the durable copy; kick it off
       // regardless of whether the quick localStorage mirror below succeeds.
       schedulePersist();
-      const ok = lsWrite('lx8_inspections', stripInspectionPhotos(storeMem.inspections));
+      const ok = STORE.save('inspections', stripInspectionPhotos(storeMem.inspections));
       if (!ok) {
         // localStorage is likely full or unavailable. The IndexedDB write
         // above is still in flight — don't tell the user it's "saved"
@@ -441,7 +662,7 @@ const ICO = {
         storeMem.inspections = ensureSampleInspection(storeMem.inspections);
         return storeMem.inspections;
       }
-      const raw = lsRead('lx8_inspections', []);
+      const raw = STORE.load('inspections');
       storeMem.inspections = ensureSampleInspection(Array.isArray(raw) ? raw : []);
       try { saveInspections(storeMem.inspections); } catch (e) {}
       return storeMem.inspections;
@@ -1194,7 +1415,7 @@ const ICO = {
         let timecardsData = null;
         let timecardsError = null;
         try {
-          const raw = lsRead('lx8_timecards', null);
+          const raw = STORE.load('timecards');
           if (raw && typeof raw === 'object') {
             timecardsData = {
               entries: Array.isArray(raw.entries) ? raw.entries : [],
@@ -1220,7 +1441,7 @@ const ICO = {
         catch (e) { identityErrors.push('sites'); console.warn('sites backup failed', e); }
         try { serialsData = JSON.parse(JSON.stringify(loadSerials() || [])); }
         catch (e) { identityErrors.push('serials'); console.warn('serials backup failed', e); }
-        const photos = await idbGetAllPhotos();
+        const photos = await STORE.getAllPhotos();
         const files = [
           { name: 'manifest.json', data: JSON.stringify({
             app: 'lematic-lx8',
@@ -1331,7 +1552,7 @@ const ICO = {
           const id = base.replace(/\.(jpg|jpeg|png)$/i, '');
           const mime = /\.png$/i.test(base) ? 'image/png' : 'image/jpeg';
           const blob = new Blob([pf.data], { type: mime });
-          await idbPutPhoto({ id, blob, caption: '', createdAt: Date.now() });
+          await STORE.putPhoto({ id, blob, caption: '', createdAt: Date.now() });
         }
         storeMem.visits = Array.isArray(visits) ? visits : [];
         storeMem.inspections = Array.isArray(inspections) ? inspections : [];
@@ -1387,7 +1608,7 @@ const ICO = {
           try {
             const tc = JSON.parse(u8ToText(byName['timecards.json']));
             if (tc && typeof tc === 'object' && Array.isArray(tc.entries)) {
-              lsWrite('lx8_timecards', { entries: tc.entries, active: tc.active || null });
+              STORE.save('timecards', { entries: tc.entries, active: tc.active || null });
               if (typeof tcLoad === 'function') tcLoad();
               timecardsRestored = true;
             } else {
@@ -1571,9 +1792,7 @@ const ICO = {
     }
     function loadJobs() {
       window.loadJobs = loadJobs;
-      const fromLs = lsRead('lx8_jobs', []);
-      const mem = Array.isArray(storeMem.jobs) ? storeMem.jobs : [];
-      const src = mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+      const src = STORE.load('jobs');
       storeMem.jobs = ensureJobsIdentities(ensureSampleJob(src));
       if (applyJobStatuses(storeMem.jobs)) saveJobs(storeMem.jobs);
       return storeMem.jobs;
@@ -1581,14 +1800,7 @@ const ICO = {
 
     function saveJobs(list) {
       storeMem.jobs = ensureJobsIdentities(Array.isArray(list) ? list : []);
-      const ok = lsWrite('lx8_jobs', storeMem.jobs);
-      if (!ok) {
-        try {
-          if (lsWrite('lx8_jobs', storeMem.jobs)) return true;
-        } catch (e) {}
-      }
-      try { idbSetKv('jobs', storeMem.jobs); } catch (e) {}
-      return ok;
+      return STORE.save('jobs', storeMem.jobs);
     }
 
     // ===== CUSTOMER / SITE / SERIAL (physical equipment) =====
@@ -1605,43 +1817,31 @@ const ICO = {
     }
 
     function loadCustomers() {
-      const fromLs = lsRead('lx8_customers', []);
-      const mem = Array.isArray(storeMem.customers) ? storeMem.customers : [];
-      const src = mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+      const src = STORE.load('customers');
       storeMem.customers = Array.isArray(src) ? src : [];
       return storeMem.customers;
     }
     function saveCustomers(list) {
       storeMem.customers = Array.isArray(list) ? list : [];
-      const ok = lsWrite('lx8_customers', storeMem.customers);
-      try { idbSetKv('customers', storeMem.customers); } catch (e) {}
-      return ok;
+      return STORE.save('customers', storeMem.customers);
     }
     function loadSites() {
-      const fromLs = lsRead('lx8_sites', []);
-      const mem = Array.isArray(storeMem.sites) ? storeMem.sites : [];
-      const src = mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+      const src = STORE.load('sites');
       storeMem.sites = Array.isArray(src) ? src : [];
       return storeMem.sites;
     }
     function saveSites(list) {
       storeMem.sites = Array.isArray(list) ? list : [];
-      const ok = lsWrite('lx8_sites', storeMem.sites);
-      try { idbSetKv('sites', storeMem.sites); } catch (e) {}
-      return ok;
+      return STORE.save('sites', storeMem.sites);
     }
     function loadSerials() {
-      const fromLs = lsRead('lx8_serials', []);
-      const mem = Array.isArray(storeMem.serials) ? storeMem.serials : [];
-      const src = mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+      const src = STORE.load('serials');
       storeMem.serials = Array.isArray(src) ? src : [];
       return storeMem.serials;
     }
     function saveSerials(list) {
       storeMem.serials = Array.isArray(list) ? list : [];
-      const ok = lsWrite('lx8_serials', storeMem.serials);
-      try { idbSetKv('serials', storeMem.serials); } catch (e) {}
-      return ok;
+      return STORE.save('serials', storeMem.serials);
     }
 
     // Find-or-create a Customer by exact normalized name (trim + lowercase
@@ -1728,17 +1928,13 @@ const ICO = {
     // instant rendering and — critically — for a synchronous Web Share (see
     // sharePartsRequest below).
     function loadPartsRequests() {
-      const fromLs = lsRead('lx8_parts_requests', []);
-      const mem = Array.isArray(storeMem.partsRequests) ? storeMem.partsRequests : [];
-      const src = mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+      const src = STORE.load('partsRequests');
       storeMem.partsRequests = Array.isArray(src) ? src : [];
       return storeMem.partsRequests;
     }
     function savePartsRequests(list) {
       storeMem.partsRequests = Array.isArray(list) ? list : [];
-      const ok = lsWrite('lx8_parts_requests', storeMem.partsRequests);
-      try { idbSetKv('parts_requests', storeMem.partsRequests); } catch (e) {}
-      return ok;
+      return STORE.save('partsRequests', storeMem.partsRequests);
     }
     // A short, human-readable "#104"-style number, distinct from the
     // opaque internal id (pr_xxxxx) — assigned lazily the first time a
@@ -2287,7 +2483,7 @@ const ICO = {
       try {
         const blob = await compressImageFile(file, 1600, 0.72);
         const id = 'pr_line_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-        await idbPutPhoto({ id, blob: blob || file, caption: '', createdAt: Date.now() });
+        await STORE.putPhoto({ id, blob: blob || file, caption: '', createdAt: Date.now() });
         const thumbBlob = await compressImageFile(file, 320, 0.6).catch(() => null);
         const dataUrl = await partsReadFileDataUrl(thumbBlob || blob || file).catch(() => '');
         window.__partsLineDraftPhoto = { photoId: id, photoThumb: dataUrl };
@@ -2602,7 +2798,7 @@ const ICO = {
       let jobs = [];
       try { jobs = loadJobs() || []; } catch (e) { jobs = []; }
       if (!jobs.length) {
-        try { jobs = JSON.parse(localStorage.getItem('lx8_jobs') || '[]') || []; } catch (e) { jobs = []; }
+        try { jobs = STORE.load('jobs') || []; } catch (e) { jobs = []; }
       }
       jobs = (jobs || []).filter(j => j && typeof j === 'object');
       jobs.forEach(j => { try { ensureJobIdentity(j); } catch (e) {} });
@@ -2708,7 +2904,7 @@ const ICO = {
       } catch (e) {}
       if (!entries.length) {
         try {
-          const raw = JSON.parse(localStorage.getItem('lx8_timecards') || 'null');
+          const raw = STORE.load('timecards');
           if (raw && Array.isArray(raw.entries)) entries = raw.entries;
         } catch (e) {}
       }
@@ -5143,7 +5339,7 @@ const ICO = {
             try {
               const blob = await compressImageFile(file, 1600, 0.72);
               const id = 'ins_' + ((currentInspection && currentInspection.id) || 'draft') + '_' + itemId + '_' + Date.now();
-              await idbPutPhoto({ id, blob: blob || file, caption: '', createdAt: Date.now() });
+              await STORE.putPhoto({ id, blob: blob || file, caption: '', createdAt: Date.now() });
               results[itemId].photoId = id;
               results[itemId].photoDataUrl = blobToObjectUrl(blob || file);
             } catch (err) {
@@ -7449,18 +7645,27 @@ const IDB_NAME = "FieldPunchlistDB";
     async function plMigrateFromOldDatabase() {
       // Already-migrated devices short-circuit here on every future load —
       // this is what makes running the migration repeatedly a no-op.
-      const already = await idbGetKv(PL_CONSOLIDATED_KEY).catch(() => null);
+      // { skipLegacyFallback: true } keeps this a pure kv-only check (same
+      // as the old direct idbGetKv(PL_CONSOLIDATED_KEY) call) so it never
+      // triggers STORE's own field_punchlist_v3 fallback ahead of the
+      // FieldPunchlistDB migration below — that fallback only belongs to
+      // plLoadData(), once this migration has already been tried.
+      const already = await STORE.load('punchlist', { skipLegacyFallback: true });
       if (already && already.jobs && already.currentJob) return already;
       // Nothing in the new location yet — check the old, separate database.
       try {
         await openDB();
         const old = await idbGet('main');
         if (old && old.jobs && old.currentJob) {
-          await idbSetKv(PL_CONSOLIDATED_KEY, old);
+          // { rawKvOnly: true }: must throw on failure exactly like the raw
+          // idbSetKv() call it replaces, so the catch below (not STORE's own
+          // localStorage fallback) decides whether this migration succeeded.
+          await STORE.save('punchlist', old, { rawKvOnly: true });
           return old;
         }
       } catch (e) {
-        // No old database either (a fresh install) — nothing to migrate.
+        // No old database either (a fresh install), or the kv write above
+        // failed — either way, nothing to report as migrated.
       }
       return null;
     }
@@ -7475,13 +7680,14 @@ const IDB_NAME = "FieldPunchlistDB";
       try {
         let saved = await plMigrateFromOldDatabase();
         if (!saved) {
+          // Falls through to STORE's own kv-read + field_punchlist_v3
+          // fallback (upgrade-write + "Data upgraded to larger storage"
+          // toast) — identical to the direct lsRead(LEGACY_KEY)/idbSetKv/
+          // toast sequence this used to run inline. The kv read inside
+          // STORE.load('punchlist') is redundant here (plMigrateFromOldDatabase
+          // just established kv is empty) but harmless.
           try {
-            const legacy = localStorage.getItem(LEGACY_KEY);
-            if (legacy) {
-              saved = JSON.parse(legacy);
-              await idbSetKv(PL_CONSOLIDATED_KEY, saved);
-              toast("Data upgraded to larger storage");
-            }
+            saved = await STORE.load('punchlist');
           } catch (e) {}
         }
         if (saved && saved.jobs && saved.currentJob) data = saved;
@@ -7496,7 +7702,7 @@ const IDB_NAME = "FieldPunchlistDB";
           // current list is picked, so re-read the stored copy directly and
           // only write an empty start when nothing is stored at all.
           let stored = saved;
-          if (!stored) stored = await idbGetKv(PL_CONSOLIDATED_KEY).catch(() => null);
+          if (!stored) stored = await STORE.load('punchlist', { skipLegacyFallback: true });
           if (stored && stored.jobs && typeof stored.jobs === 'object') data = stored;
           else { data = { jobs: {}, currentJob: '' }; await plSaveData(); }
         }
@@ -7508,19 +7714,11 @@ const IDB_NAME = "FieldPunchlistDB";
     }
 
     async function plSaveData() {
-      try {
-        await idbSetKv(PL_CONSOLIDATED_KEY, data);
-        return true;
-      } catch (e) {
-        try {
-          localStorage.setItem(LEGACY_KEY, JSON.stringify(data));
-          toast("Saved (fallback mode)");
-          return true;
-        } catch (e2) {
-          toast("Storage full – remove photos or old jobs");
-          return false;
-        }
-      }
+      // The kv 'punchlist_main' write + field_punchlist_v3 fallback-with-
+      // toasts now lives in STORE.save('punchlist', value) — see the STORE
+      // section. This is an exact behavioral delegate: same write, same
+      // fallback, same two toasts.
+      return STORE.save('punchlist', data);
     }
 
     function updateOnlineStatus() {
@@ -9749,7 +9947,7 @@ const IDB_NAME = "FieldPunchlistDB";
     }
     function tcLoad() {
       try {
-        const raw = lsRead('lx8_timecards', null);
+        const raw = STORE.load('timecards');
         if (raw && typeof raw === 'object') {
           tcState.entries = Array.isArray(raw.entries) ? raw.entries : [];
           tcState.active = raw.active || null;
@@ -9767,7 +9965,7 @@ const IDB_NAME = "FieldPunchlistDB";
     // behavior unchanged, same as before this phase.
     function tcSave() {
       try {
-        return !!lsWrite('lx8_timecards', { entries: tcState.entries, active: tcState.active });
+        return !!STORE.save('timecards', { entries: tcState.entries, active: tcState.active });
       } catch (e) {
         return false;
       }
@@ -10769,7 +10967,7 @@ function tcRenderEntryList(listEl, offset) {
     window.tcRemoveSampleEntries = tcRemoveSampleEntries;
     window.tcCountSampleEntries = function() {
       try {
-        const raw = lsRead('lx8_timecards', null);
+        const raw = STORE.load('timecards');
         const list = (raw && Array.isArray(raw.entries)) ? raw.entries : [];
         return list.filter(isSampleTimeEntry).length;
       } catch (e) { return 0; }
@@ -11326,7 +11524,7 @@ function tcRenderEntryList(listEl, offset) {
         try {
           const blob = await compressImageFile(file, 1600, 0.72);
           const id = 'ins_' + ((currentInspection && currentInspection.id) || 'draft') + '_' + itemId + '_' + Date.now();
-          await idbPutPhoto({ id, blob: blob || file, caption: '', createdAt: Date.now() });
+          await STORE.putPhoto({ id, blob: blob || file, caption: '', createdAt: Date.now() });
           results[itemId].photoId = id;
           if (blob) dataUrl = await readFileDataUrl(blob).catch(() => dataUrl);
         } catch (e) {}

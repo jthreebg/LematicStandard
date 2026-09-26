@@ -1,11 +1,11 @@
-const CACHE = 'lematic-fs-flat-v153';
+const CACHE = 'lematic-fs-flat-v154';
 const PRECACHE = [
   './',
   './index.html',
-  './app.css?v=153',
-  './app.js?v=153',
-  './templates.js?v=153',
-  './qrcode.min.js?v=153',
+  './app.css?v=154',
+  './app.js?v=154',
+  './templates.js?v=154',
+  './qrcode.min.js?v=154',
   './exceljs.min.js',
   './timecard-template.xlsx',
   './Punchlist_Template_ExcelJS.xlsx',
