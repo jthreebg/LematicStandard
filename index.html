@@ -33,7 +33,7 @@
       if(light)document.documentElement.classList.add('theme-light');
     }catch(e){}})();
   </script>
-  <link rel="stylesheet" href="app.css?v=155" />
+  <link rel="stylesheet" href="app.css?v=156" />
   
 
 
@@ -330,6 +330,16 @@
       <div class="storage-sub" id="sampleDataSub">This device still has the app's built-in practice records.</div>
       <div class="storage-actions">
         <button type="button" class="btn" id="btnRemoveSampleData">Remove sample data</button>
+      </div>
+    </div>
+    <!-- v156 (punchlist speed) — shown only while some punchlist photos
+         are still full camera size (taken before v156). Never runs on
+         its own; always asks first. -->
+    <div class="storage-card" id="plShrinkCard" hidden>
+      <div class="storage-kicker">Punchlist photos</div>
+      <div class="storage-sub" id="plShrinkSub">Some punchlist photos are full camera size, which makes Punchlist slow to open.</div>
+      <div class="storage-actions">
+        <button type="button" class="btn" id="btnShrinkPlPhotos">Shrink existing punchlist photos</button>
       </div>
     </div>
     <!-- Phase 6 — read-only diagnostic only. No delete/merge/repair
@@ -1156,8 +1166,8 @@
   
   
   
-  <script src="qrcode.min.js?v=155" defer></script>
-  <script src="templates.js?v=155" defer></script>
-  <script src="app.js?v=155" defer></script>
+  <script src="qrcode.min.js?v=156" defer></script>
+  <script src="templates.js?v=156" defer></script>
+  <script src="app.js?v=156" defer></script>
 </body>
 </html>

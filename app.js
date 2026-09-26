@@ -1335,7 +1335,44 @@ const ICO = {
       bits.push(persisted ? 'kept by the OS' : 'ask the OS to keep');
       if (sub) sub.textContent = bits.join(' · ');
       try { refreshSampleDataCard(); } catch (e) {}
+      try { refreshPlShrinkCard(); } catch (e) {}
     }
+    // v156: show the "Shrink existing punchlist photos" card only when
+    // there is something to shrink.
+    async function refreshPlShrinkCard() {
+      const card = document.getElementById('plShrinkCard');
+      if (!card || typeof window.getPunchlistLargePhotoInfo !== 'function') return;
+      const info = await window.getPunchlistLargePhotoInfo();
+      card.hidden = !(info && info.count);
+      const sub = document.getElementById('plShrinkSub');
+      if (sub && info && info.count) {
+        sub.textContent = info.count + ' punchlist photo' + (info.count === 1 ? ' is' : 's are') +
+          ' still full camera size (about ' + info.mb + ' MB), which makes Punchlist slow to open. ' +
+          'Shrinking them keeps every photo, at the same size inspection photos use.';
+      }
+    }
+    (function bindShrinkPlPhotos() {
+      const btn = document.getElementById('btnShrinkPlPhotos');
+      if (!btn) return;
+      btn.addEventListener('click', async () => {
+        const ok = window.confirm('This permanently reduces the resolution of existing punchlist photos to the size inspection photos use. Export a backup first (Settings → Backup) if you want to keep the originals.\n\nShrink them now?');
+        if (!ok) return;
+        btn.disabled = true;
+        const oldText = btn.textContent;
+        btn.textContent = 'Shrinking…';
+        try {
+          const r = await window.shrinkPunchlistPhotos();
+          if (!r.saved) toast('Could not save — nothing was changed on storage');
+          else if (!r.count) toast('No photos needed shrinking');
+          else toast('Shrank ' + r.count + ' photo' + (r.count === 1 ? '' : 's') + ', saved about ' + r.savedMb + ' MB');
+        } catch (e) {
+          toast('Could not shrink photos');
+        }
+        btn.disabled = false;
+        btn.textContent = oldText;
+        try { refreshStorageCard(); } catch (e) {}
+      });
+    })();
 
     // v152 (Phase 12A Fix 6): "Remove sample data". Deletes only records
     // carrying the app's fixed built-in sample IDs (job_sample_demo,
@@ -4621,10 +4658,11 @@ const ICO = {
             const open = (match.total || 0) - (match.complete || 0);
             const inProgress = match.total === 0 || open > 0;
             if (inProgress) {
+              // openPunchlistByName() has already rendered the list; v156
+              // no longer renders it a second time here.
               await window.openPunchlistByName(last);
               showScreen('screenPunchlist');
               setHeader('Punchlist');
-              if (typeof window.renderList === 'function') window.renderList();
               return;
             }
           }
@@ -8304,9 +8342,29 @@ const IDB_NAME = "FieldPunchlistDB";
         }
         else { data = JSON.parse(JSON.stringify(defaultData)); await plSaveData(); }
         try { migratePunchlistJobKeys(); } catch (e) {}
+        plLoaded = true;
       } catch (e) {
         data = plUseSamplePunchlists() ? JSON.parse(JSON.stringify(defaultData)) : { jobs: {}, currentJob: '' };
+        plLoaded = false;
       }
+    }
+
+    // v156 (punchlist speed): every punchlist change in this page already
+    // goes through the in-memory `data` object and is saved from it, so
+    // once the bundle has been read from storage the in-memory copy is
+    // always the current one. Read-only helpers (opening a list, list
+    // summaries, counts, search) use this instead of plLoadData(), so a
+    // tap on Punchlist no longer re-reads the whole bundle — every photo
+    // in every list — from IndexedDB. A load already in progress (e.g.
+    // initPunchlist at startup) is shared rather than started twice.
+    let plLoaded = false;
+    let plLoadingPromise = null;
+    function plEnsureLoaded() {
+      if (plLoaded && data && data.jobs) return Promise.resolve();
+      if (!plLoadingPromise) {
+        plLoadingPromise = plLoadData().finally(() => { plLoadingPromise = null; });
+      }
+      return plLoadingPromise;
     }
 
     async function plSaveData() {
@@ -8607,17 +8665,32 @@ const IDB_NAME = "FieldPunchlistDB";
           </div>
           <div class="list-item-actions">
             <span class="badge ${statusBadgeClass(item.status)}">${item.status}</span>
-            ${item.photo ? `<img class="list-item-photo" src="${item.photo}" alt="Item photo" onclick="openPunchlistPhoto(event, this.src)">` : ""}
+            ${item.photo ? `<img class="list-item-photo" data-pl-photo="1" alt="Item photo" loading="lazy" decoding="async" onclick="openPunchlistPhoto(event, this.src)">` : ""}
           </div>
           <div class="list-item-detail">
             ${item.comments ? `<div class="detail-row"><strong>Comments</strong>${escapeHtml(item.comments)}</div>` : ""}
             ${item.responsible ? `<div class="detail-row"><strong>Responsible</strong>${escapeHtml(item.responsible)}</div>` : ""}
             ${item.dueDate ? `<div class="detail-row"><strong>Due</strong>${escapeHtml(item.dueDate)}</div>` : ""}
-            ${item.photo ? `<img class="list-item-photo" src="${item.photo}" alt="Item photo" onclick="openPunchlistPhoto(event, this.src)">` : ""}
+            ${/* v156: a second full-size copy of the photo used to be placed here too. This expanded-detail panel is never opened by any code (nothing adds the "expanded" class to punchlist rows), so that copy was pure cost: every photo was loaded twice per render. The thumbnail above is the one people see and tap. */ ""}
 
           </div>
         </div>
       `}).join("");
+      // v156 (punchlist speed): photos used to be pasted into the HTML
+      // text above as full data URLs — twice per item — so every render
+      // parsed megabytes of text per photo. Now the <img> tags carry no
+      // src and each one is pointed at the item's existing photo string
+      // here instead (no copying, no HTML parsing). Same picture, same
+      // tap-to-open behavior (it reads this.src).
+      try {
+        const plPhotoById = {};
+        filtered.forEach(it => { if (it && it.photo) plPhotoById[String(it.id)] = it.photo; });
+        list.querySelectorAll('.pl-item').forEach(row => {
+          const ph = plPhotoById[row.getAttribute('data-id')];
+          if (!ph) return;
+          row.querySelectorAll('img[data-pl-photo]').forEach(img => { img.src = ph; });
+        });
+      } catch (e) {}
       if (typeof bindSwipeToDelete === 'function') {
         bindSwipeToDelete(list, '.pl-item', (row) => ({
           id: row.getAttribute('data-id'),
@@ -8853,10 +8926,10 @@ const IDB_NAME = "FieldPunchlistDB";
     }
 
     function handlePhoto(e) {
-      const file = e.target.files[0];
+      const input = e.target;
+      const file = input.files[0];
       if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (ev) => {
+      const onRead = (ev) => {
         tempPhoto = ev.target.result;
         const preview = document.getElementById("photo-preview");
         const wrap = document.getElementById("photo-preview-wrap");
@@ -8865,17 +8938,35 @@ const IDB_NAME = "FieldPunchlistDB";
           preview.classList.remove("hidden");
         }
         if (wrap) wrap.classList.remove("hidden");
-        try { e.target.value = ''; } catch (err) {}
-        try { e.target.blur(); } catch (err) {}
+        try { input.value = ''; } catch (err) {}
+        try { input.blur(); } catch (err) {}
         if (typeof showPlActionBars === 'function') showPlActionBars();
       };
       // Phase 7C (C3): this had no failure path at all — a bad read
       // left the technician with no preview and no error, previously
       // indistinguishable from success. Same failure copy already used
       // elsewhere in the app for this exact situation.
-      reader.onerror = () => { toast('Could not attach photo'); try { e.target.value = ''; } catch (err) {} };
-      reader.onabort = () => { toast('Could not attach photo'); try { e.target.value = ''; } catch (err) {} };
-      reader.readAsDataURL(file);
+      const onFail = () => { toast('Could not attach photo'); try { input.value = ''; } catch (err) {} };
+      const readAsDataUrl = (blob) => {
+        const reader = new FileReader();
+        reader.onload = onRead;
+        reader.onerror = onFail;
+        reader.onabort = onFail;
+        reader.readAsDataURL(blob);
+      };
+      // v156 (punchlist speed): shrink the photo the same way inspection
+      // and parts photos already are (longest side 1600 px, JPEG 72%)
+      // before storing it. A full camera photo is 3–6 MB; this is
+      // typically 200–400 KB. Stored exactly as before (a data URL in
+      // item.photo). If shrinking fails, or would make it bigger, the
+      // original file is used, as before.
+      const shrink = (typeof compressImageFile === 'function')
+        ? compressImageFile(file, 1600, 0.72).catch(() => file)
+        : Promise.resolve(file);
+      shrink.then((blob) => {
+        const use = (blob && blob.size && blob.size < file.size) ? blob : file;
+        readAsDataUrl(use);
+      }, () => readAsDataUrl(file));
     }
 
 
@@ -9469,7 +9560,7 @@ const IDB_NAME = "FieldPunchlistDB";
       return window.createPunchlistForJob(job);
     };
     window.getPunchlistStatsForJob = async function(jobOrName) {
-      await plLoadData();
+      await plEnsureLoaded(); // v156: in-memory copy, no re-read
       if (!data || !data.jobs) return { total: 0, open: 0, complete: 0 };
       const jobId = (jobOrName && typeof jobOrName === 'object') ? jobOrName.id : '';
       const name = typeof jobOrName === 'string' ? jobOrName : '';
@@ -9489,7 +9580,7 @@ const IDB_NAME = "FieldPunchlistDB";
     // v152 (Phase 12A Fix 2): read-only count of punchlist item photos
     // (item.photo), for the Settings "On this device" line. Never writes.
     window.getPunchlistPhotoCount = async function() {
-      await plLoadData();
+      await plEnsureLoaded(); // v156: in-memory copy, no re-read
       if (!data || !data.jobs) return 0;
       let n = 0;
       Object.keys(data.jobs).forEach(k => {
@@ -9497,8 +9588,57 @@ const IDB_NAME = "FieldPunchlistDB";
       });
       return n;
     };
+    // v156 (punchlist speed): punchlist photos taken before v156 were
+    // stored at full camera size. These two helpers find them and, only
+    // when the user asks (Settings, after a confirm), re-save them at the
+    // same size inspection photos use. Nothing else is touched: same
+    // items, same field, same data-URL format — only smaller pictures.
+    const PL_LARGE_PHOTO_CHARS = 700000; // ~0.5 MB
+    window.getPunchlistLargePhotoInfo = async function() {
+      await plEnsureLoaded();
+      let count = 0, chars = 0;
+      Object.keys((data && data.jobs) || {}).forEach(k => {
+        (data.jobs[k] || []).forEach(item => {
+          if (item && typeof item.photo === 'string' && item.photo.indexOf('data:image') === 0 && item.photo.length > PL_LARGE_PHOTO_CHARS) {
+            count += 1; chars += item.photo.length;
+          }
+        });
+      });
+      return { count, mb: Math.round(chars * 0.75 / 1048576) };
+    };
+    window.shrinkPunchlistPhotos = async function() {
+      await plEnsureLoaded();
+      const toDataUrl = (blob) => new Promise((resolve) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result);
+        fr.onerror = () => resolve(null);
+        fr.readAsDataURL(blob);
+      });
+      let count = 0, before = 0, after = 0, failed = 0;
+      for (const k of Object.keys((data && data.jobs) || {})) {
+        for (const item of (data.jobs[k] || [])) {
+          if (!item || typeof item.photo !== 'string' || item.photo.indexOf('data:image') !== 0) continue;
+          if (item.photo.length <= PL_LARGE_PHOTO_CHARS) continue;
+          try {
+            const blob = (typeof dataUrlToBlob === 'function') ? dataUrlToBlob(item.photo) : null;
+            if (!blob) { failed += 1; continue; }
+            const small = await compressImageFile(blob, 1600, 0.72);
+            if (!small || small === blob || !small.size || small.size >= blob.size) { failed += 1; continue; }
+            const url = await toDataUrl(small);
+            if (!url || url.indexOf('data:image') !== 0 || url.length >= item.photo.length) { failed += 1; continue; }
+            before += item.photo.length; after += url.length;
+            item.photo = url;
+            count += 1;
+          } catch (e) { failed += 1; }
+        }
+      }
+      let saved = true;
+      if (count) saved = await plSaveData();
+      try { if (typeof renderList === 'function') renderList(); } catch (e) {}
+      return { count, failed, saved, savedMb: Math.round((before - after) * 0.75 / 1048576) };
+    };
     window.searchPunchlistItems = async function(q) {
-      await plLoadData();
+      await plEnsureLoaded(); // v156: in-memory copy, no re-read
       const needle = String(q || "").trim().toLowerCase();
       if (!needle || !data || !data.jobs) return [];
       const out = [];
@@ -9530,7 +9670,7 @@ const IDB_NAME = "FieldPunchlistDB";
       if (typeof openDetail === "function") openDetail(itemId);
     };
     window.getPunchlistSummaries = async function() {
-      await plLoadData();
+      await plEnsureLoaded(); // v156: in-memory copy, no re-read
       if (!data || !data.jobs) return [];
       const links = data.jobIdByKey || {};
       const fieldJobs = (typeof loadJobs === 'function' ? loadJobs() : []) || [];
@@ -9569,7 +9709,7 @@ const IDB_NAME = "FieldPunchlistDB";
       return true;
     };
     window.openPunchlistByName = async function(name) {
-      await plLoadData();
+      await plEnsureLoaded(); // v156: in-memory copy, no re-read
       if (!data) data = { jobs: {}, currentJob: '' };
       if (!data.jobs) data.jobs = {};
       let key = name;
@@ -9581,10 +9721,15 @@ const IDB_NAME = "FieldPunchlistDB";
           if (found) key = found;
         }
       }
-      if (!data.jobs[key]) data.jobs[key] = [];
+      // v156: only write the bundle if opening this list actually changed
+      // something (a new empty list, or a different current list). It used
+      // to rewrite the whole bundle — every photo — on every open.
+      let plOpenChanged = false;
+      if (!data.jobs[key]) { data.jobs[key] = []; plOpenChanged = true; }
+      if (data.currentJob !== key) plOpenChanged = true;
       data.currentJob = key;
       name = key;
-      await plSaveData();
+      if (plOpenChanged) await plSaveData();
       populateJobSelect();
       renderList();
       try {
@@ -9599,6 +9744,7 @@ const IDB_NAME = "FieldPunchlistDB";
     window.setPunchlistBackup = async function(saved) {
       if (!saved || !saved.jobs) throw new Error('bad-punchlist');
       data = saved;
+      plLoaded = true;
       if (!data.currentJob || !data.jobs[data.currentJob]) {
         const names = Object.keys(data.jobs);
         data.currentJob = names[0] || "Default";
