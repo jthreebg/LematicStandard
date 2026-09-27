@@ -264,6 +264,15 @@ const ICO = {
               return legacy;
             })();
           }
+          case 'editLog': {
+            const fromLs = lsRead('lx8_edit_log', []);
+            const mem = Array.isArray(storeMem.editLog) ? storeMem.editLog : [];
+            return mem.length ? mem : (Array.isArray(fromLs) ? fromLs : []);
+          }
+          case 'editorSettings': {
+            const fromLs = lsRead('lx8_editor_settings', { pin: '' });
+            return (fromLs && typeof fromLs === 'object') ? fromLs : { pin: '' };
+          }
           default:
             throw new Error('STORE.load: unknown kind "' + kind + '"');
         }
@@ -360,6 +369,17 @@ const ICO = {
                 return false;
               }
             })();
+          }
+          case 'editLog': {
+            storeMem.editLog = Array.isArray(value) ? value : [];
+            const ok = lsWrite('lx8_edit_log', storeMem.editLog);
+            try { idbSetKv('edit_log', storeMem.editLog); } catch (e) {}
+            return ok;
+          }
+          case 'editorSettings': {
+            const ok = lsWrite('lx8_editor_settings', value || { pin: '' });
+            try { idbSetKv('editor_settings', value || { pin: '' }); } catch (e) {}
+            return ok;
           }
           default:
             throw new Error('STORE.save: unknown kind "' + kind + '"');
@@ -786,6 +806,8 @@ const ICO = {
       document.body.classList.toggle('on-punchlist', id === 'screenPunchlist');
       document.body.classList.toggle('on-pl-edit', id === 'screenPunchlistEdit');
       document.body.classList.toggle('on-jobs-list', id === 'screenJobsList');
+      document.body.classList.toggle('on-editor', id === 'screenEditor');
+      if (id !== 'screenEditor') document.body.classList.remove('on-editor');
       // Show the global header back chevron on every navigable page.
       // Home, the Settings landing page, and the main Time Cards landing page
       // keep their existing header behavior; all other screens can now return
@@ -793,7 +815,7 @@ const ICO = {
       const genericBackScreens = new Set([
         'screenJobsList', 'screenJobDetail', 'screenJobForm',
         'screenInspectList', 'screenPunchlistList', 'screenPunchlistEdit',
-        'screenPartsList', 'screenPartsForm'
+        'screenPartsList', 'screenPartsForm', 'screenEditor'
       ]);
       document.body.classList.toggle('has-screen-back', genericBackScreens.has(id));
       const fab = document.getElementById('fab-add');
@@ -1615,6 +1637,16 @@ const ICO = {
         if (sitesData) files.push({ name: 'sites.json', data: JSON.stringify(sitesData) });
         if (serialsData) files.push({ name: 'serials.json', data: JSON.stringify(serialsData) });
         if (machinesData) files.push({ name: 'machines.json', data: JSON.stringify(machinesData) });
+        try {
+          const editLog = STORE.load('editLog');
+          if (Array.isArray(editLog) && editLog.length) {
+            files.push({ name: 'edit_log.json', data: JSON.stringify(editLog) });
+          }
+        } catch (e) { console.warn('edit log backup failed', e); }
+        try {
+          const rawPin = localStorage.getItem('lx8_editor_settings');
+          if (rawPin) files.push({ name: 'editor_settings.json', data: rawPin });
+        } catch (e) { console.warn('editor settings backup failed', e); }
         for (const rec of photos) {
           if (!rec || !rec.id || !rec.blob) continue;
           const ext = (rec.blob.type && rec.blob.type.indexOf('png') >= 0) ? 'png' : 'jpg';
@@ -1793,6 +1825,21 @@ const ICO = {
         // case for any pre-Phase-15 backup and leaves local Machine data
         // untouched, same as the other identity stores above.
         restoreIdentityStore('machines.json', saveMachines, 'machines');
+        try {
+          if (byName['edit_log.json']) {
+            const parsedLog = JSON.parse(u8ToText(byName['edit_log.json']));
+            if (Array.isArray(parsedLog)) STORE.save('editLog', parsedLog);
+          }
+        } catch (e) { console.warn('edit log restore', e); }
+        try {
+          if (byName['editor_settings.json']) {
+            const parsedSet = JSON.parse(u8ToText(byName['editor_settings.json']));
+            if (parsedSet && typeof parsedSet === 'object') {
+              localStorage.setItem('lx8_editor_settings', JSON.stringify(parsedSet));
+              try { STORE.save('editorSettings', parsedSet); } catch (e2) {}
+            }
+          }
+        } catch (e) { console.warn('editor settings restore', e); }
 
         // v157 fix (Phase 15B review round 2, item B.1): restored data
         // needs machine links too, even on a device where the one-time
@@ -2117,6 +2164,78 @@ const ICO = {
     // (see saveJobFromForm) and never get a lx8_machines record, so they
     // never appear in loadMachines(), backups' machines.json, or any
     // autocomplete sourced from this store (approved amendment B).
+    // ===== v159 (Phase 15B follow-up): ONE machine-type list =====
+    // Defined once, used everywhere a type is chosen — the job form's
+    // serial/placeholder chips and the inspection machine picker (see
+    // openTypePicker() below) — so there is never a second hard-coded copy
+    // to fall out of sync. Order matters: COMMON first (large one-tap
+    // buttons), then OTHER KNOWN (smaller buttons/list), then "Other".
+    const MACHINE_TYPE_COMMON = ['LX-8', 'LX-7', 'LS-132', 'LS-133'];
+    const MACHINE_TYPE_OTHER_KNOWN = ['Muffin Bagger', 'LS-131', 'SL90', 'Band Slicer', 'Hinge Slicer', 'Bagel Slicer', 'Muffin Forker', 'Tray Washer', 'Dough Imprinter', 'P-7 Pattern Former', 'Horizontal Switch'];
+    const ALL_MACHINE_TYPES = MACHINE_TYPE_COMMON.concat(MACHINE_TYPE_OTHER_KNOWN);
+    // Types that have an inspection checklist — driven by the checklist
+    // templates themselves (window.MACHINE_TEMPLATES), never a second
+    // hard-coded list. Today that's exactly the COMMON four, but this
+    // stays correct if a template is ever added/removed.
+    function checklistMachineTypes() {
+      let keys = [];
+      try { keys = Object.keys(window.MACHINE_TEMPLATES || {}); } catch (e) { keys = []; }
+      if (!keys.length) return MACHINE_TYPE_COMMON.slice();
+      const known = ALL_MACHINE_TYPES.filter(t => keys.indexOf(t) !== -1);
+      const extra = keys.filter(k => ALL_MACHINE_TYPES.indexOf(k) === -1);
+      return known.concat(extra);
+    }
+    // v159 review fix #4: whether a given type has an inspection checklist
+    // at all (case/space/hyphen-insensitive) — used to keep the inspection
+    // picker from silently defaulting to a checklist type for a machine
+    // that has none (e.g. "Tray Washer"), and to require one be actually
+    // picked before an inspection can start.
+    function typeHasChecklist(type) {
+      const key = normalizeTypeKey(type);
+      if (!key) return false;
+      return checklistMachineTypes().some(t => normalizeTypeKey(t) === key);
+    }
+    // Case/space/hyphen-insensitive key for matching typed "Other" text
+    // against the known list — "ls133", "Ls-131", "band slicer" all match
+    // their known spelling this way (normalizeMatchText alone only
+    // lowercases/trims, which isn't enough for "LS-133" vs "ls133").
+    function normalizeTypeKey(v) {
+      return String(v || '').trim().toLowerCase().replace(/[\s-]+/g, '');
+    }
+    // Trim; if the trimmed text matches a known type ignoring case/spaces/
+    // hyphens, return the known type's exact spelling; otherwise keep the
+    // trimmed text as typed.
+    function normalizeMachineTypeInput(text) {
+      const trimmed = String(text || '').trim();
+      if (!trimmed) return '';
+      const key = normalizeTypeKey(trimmed);
+      const known = ALL_MACHINE_TYPES.find(t => normalizeTypeKey(t) === key);
+      return known || trimmed;
+    }
+    // Custom (not-in-the-known-list) types already used on this device —
+    // suggestions for the "Other" text box. Scans machine records and any
+    // in-progress job placeholders/drafts so a type typed once is
+    // suggested again right away, even before it's saved anywhere else.
+    function customMachineTypeSuggestions() {
+      const seen = new Set();
+      const out = [];
+      const consider = (t) => {
+        const v = String(t || '').trim();
+        if (!v) return;
+        if (ALL_MACHINE_TYPES.some(k => normalizeTypeKey(k) === normalizeTypeKey(v))) return;
+        const key = normalizeTypeKey(v);
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(v);
+      };
+      try { (loadMachines() || []).forEach(m => consider(m && m.machineType)); } catch (e) {}
+      try { (typeof jobPlaceholdersDraft !== 'undefined' ? jobPlaceholdersDraft : []).forEach(p => consider(p && p.type)); } catch (e) {}
+      try {
+        const jobs = (typeof loadJobs === 'function') ? (loadJobs() || []) : [];
+        jobs.forEach(j => (Array.isArray(j && j.placeholderMachines) ? j.placeholderMachines : []).forEach(p => consider(p && p.type)));
+      } catch (e) {}
+      return out;
+    }
     function loadMachines() {
       const src = STORE.load('machines');
       storeMem.machines = Array.isArray(src) ? src : [];
@@ -2205,24 +2324,48 @@ const ICO = {
           m.machineTypeSource = incomingSource;
           changed = true;
         } else if (!sameNormalized) {
-          if (incomingSource === 'inspection') {
-            // An inspection-sourced type may replace anything.
+          if (incomingSource === 'manager') {
+            // Manager correction always writes. Inspection does not
+            // overwrite a different manager type (Needs Attention).
             m.machineType = incomingType;
             m.machineTypeSource = incomingSource;
             changed = true;
-          } else if (currentSource === 'inspection') {
-            // Never let a job/manual value overwrite an inspection-sourced one.
+          } else if (incomingSource === 'inspection') {
+            if (currentSource === 'manager') {
+              report.typeConflict = { existingType: currentType, existingSource: currentSource, incomingType, incomingSource };
+            } else {
+              // v159: a later inspection updates the machine, including
+              // over a previous inspection-sourced type.
+              m.machineType = incomingType;
+              m.machineTypeSource = incomingSource;
+              changed = true;
+            }
+          } else if (currentSource === 'inspection' || currentSource === 'manager') {
             report.typeConflict = { existingType: currentType, existingSource: currentSource, incomingType, incomingSource };
+          } else if (incomingSource === 'job' && opts.allowJobRetype) {
+            // v159 (Phase 15B follow-up): a deliberate per-serial type
+            // correction made through the job form's shared picker — the
+            // technician tapped a serial's type and chose a different one
+            // on purpose, so (unlike an ordinary job-save reconciling
+            // whatever job.machine used to say) this MAY replace an
+            // existing job/manual-sourced type. Still never touches an
+            // inspection-sourced one — that's the branch above.
+            m.machineType = incomingType;
+            m.machineTypeSource = incomingSource;
+            changed = true;
           } else {
             // Two non-inspection values disagree — keep the first on file,
             // report the conflict (same "first wins" rule as before, now
             // scoped to same-tier conflicts only).
             report.typeConflict = { existingType: currentType, existingSource: currentSource, incomingType, incomingSource };
           }
-        } else if (incomingSource === 'inspection' && currentSource !== 'inspection') {
+        } else if (incomingSource === 'inspection' && currentSource !== 'inspection' && currentSource !== 'manager') {
           // Same text, but now confirmed by an inspection — upgrade the
           // recorded source so a later job-sourced change can't override it.
           m.machineTypeSource = 'inspection';
+          changed = true;
+        } else if (incomingSource === 'manager' && currentSource !== 'manager') {
+          m.machineTypeSource = 'manager';
           changed = true;
         }
       }
@@ -2349,19 +2492,34 @@ const ICO = {
       if (!singleSerial && serials.length && job.so && opts.multiSerialSoSkipped) {
         opts.multiSerialSoSkipped.push({ serials: serials.slice(), so: job.so, jobId: job.id });
       }
+      // v159 (Phase 15B follow-up, item 6): each serial's OWN chosen type
+      // is applied here — never job.machine stamped onto every serial (job.
+      // machine is now only a derived summary, computed after this runs;
+      // see computeJobMachineSummary()). opts.serialTypeOverrides is a
+      // { normalizeMatchText(serial): type } map the job form builds from
+      // its per-chip picker choices (jobSerialTypeDraft) — see
+      // saveJobFromForm(). A serial with no entry there already has its
+      // own committed type (or none was ever chosen for it), so nothing
+      // is sent and nothing changes.
+      const serialTypeOverrides = opts.serialTypeOverrides || {};
       serials.forEach(serial => {
         const machine = findOrCreateMachine(serial);
         if (!machine) return;
         machineIds.push(machine.id);
         const updates = {};
-        if (job.machine) { updates.machineType = job.machine; updates.machineTypeSource = 'job'; }
+        const chosenType = serialTypeOverrides[normalizeMatchText(serial)];
+        if (chosenType) { updates.machineType = chosenType; updates.machineTypeSource = 'job'; }
         if (singleSerial && job.so) updates.salesOrder = job.so;
         if (job.productionLine) updates.productionLine = job.productionLine;
         if (site) { updates.siteId = site.id; updates.customerId = customer.id; }
         const result = applyMachineUpdate(machine.id, updates, {
           source: opts.source || 'job-save',
           jobId: job.id,
-          asOf: job.date || job.createdAt || ''
+          asOf: job.date || job.createdAt || '',
+          // Only the real interactive job-save path may retype an
+          // already-typed serial (a deliberate tap on its chip) — the
+          // lazy view-fallback and the one-time backfill never do.
+          allowJobRetype: opts.source === 'job-save'
         });
         if (result) {
           if (result.typeConflict && opts.typeConflicts) opts.typeConflicts.push(Object.assign({ serial }, result.typeConflict));
@@ -2379,6 +2537,35 @@ const ICO = {
         });
       }
       return job;
+    }
+    // v159 (Phase 15B follow-up, item 7): job.machine is kept, but only as
+    // a DERIVED summary — the most common type across the job's serials
+    // (their machine records, read back after resolveJobEquipmentSnapshot
+    // has just written to them) and placeholders, first type seen wins a
+    // tie. Never written back to any machine record; existing readers
+    // (parts-request headers, the inspection info card, old exports, old
+    // data) keep reading job.machine exactly as before.
+    function computeJobMachineSummary(job) {
+      if (!job) return '';
+      const counts = new Map();
+      const order = [];
+      const tally = (type) => {
+        const t = String(type || '').trim();
+        if (!t) return;
+        if (!counts.has(t)) { counts.set(t, 0); order.push(t); }
+        counts.set(t, counts.get(t) + 1);
+      };
+      (Array.isArray(job.serials) ? job.serials : []).forEach(s => {
+        const machine = findMachineBySerial(jobSerialText(s));
+        tally(machine && machine.machineType);
+      });
+      (Array.isArray(job.placeholderMachines) ? job.placeholderMachines : []).forEach(p => tally(p && p.type));
+      let best = '', bestCount = 0;
+      order.forEach(t => {
+        const c = counts.get(t);
+        if (c > bestCount) { best = t; bestCount = c; }
+      });
+      return best;
     }
     // Same idea as resolveJobEquipmentSnapshot, for one inspection. Called
     // whenever an inspection is actually saved (saveCurrentDraft, and the
@@ -3487,15 +3674,51 @@ const ICO = {
       document.getElementById('jobSO').value = job?.so || '';
       const prodLineEl = document.getElementById('jobProductionLine');
       if (prodLineEl) prodLineEl.value = job?.productionLine || '';
+      // v158 simplification: show the Production line field automatically
+      // only when this job already has one; otherwise start collapsed
+      // behind "+ Production line" (#btnShowJobProductionLine).
+      const prodLineGroup = document.getElementById('jobProductionLineGroup');
+      const prodLineToggle = document.getElementById('btnShowJobProductionLine');
+      if (prodLineGroup && prodLineToggle) {
+        const hasProdLine = !!(job && job.productionLine);
+        prodLineGroup.classList.toggle('hidden', !hasProdLine);
+        prodLineToggle.classList.toggle('hidden', hasProdLine);
+      }
       document.getElementById('jobStatus').value = job?.status || 'Planned';
       document.getElementById('jobScope').value = job?.scope || '';
       document.getElementById('jobNotes').value = job?.notes || '';
       fillJobCustomerList();
       fillJobSiteList(job?.customer || '');
       fillJobSerialList(job?.customer || '', job?.site || '');
-      setJobMachineFields(job?.machine || 'LX-8');
+      // v159 (Phase 15B follow-up): no more job-level Machine picker — each
+      // serial/placeholder carries its own type. jobSerialTypeDraft holds a
+      // pending job-chosen type for any serial that doesn't yet have a
+      // committed one of its own; jobLastAddedType tracks the running
+      // default ("type of the last serial added on this job") so a
+      // single-type job takes no more taps than before (item 5/9).
       jobSerialsDraft = normalizeJobSerials(Array.isArray(job?.serials) ? job.serials : []);
       jobPlaceholdersDraft = Array.isArray(job?.placeholderMachines) ? job.placeholderMachines.map(p => Object.assign({}, p)) : [];
+      jobSerialTypeDraft = {};
+      jobLastAddedType = '';
+      // Walk the job's serials in their ORIGINAL (add) order, not the
+      // display-sorted jobSerialsDraft, so "last added" means what it says.
+      (Array.isArray(job?.serials) ? job.serials : []).forEach(s => {
+        const text = jobSerialText(s);
+        if (!text) return;
+        const machine = findMachineBySerial(text);
+        let type = machine && machine.machineType;
+        if (!type) {
+          // v159 (item 7): an old job's single job.machine field becomes
+          // this still-untyped serial's DISPLAYED type — a backward-compat
+          // read only. It's written to the machine record (and job.machine
+          // recomputed as a derived summary) only if this job is actually
+          // saved — see saveJobFromForm()/resolveJobEquipmentSnapshot().
+          type = job.machine || jobLastAddedType || 'LX-8';
+          jobSerialTypeDraft[normalizeMatchText(text)] = type;
+        }
+        jobLastAddedType = type;
+      });
+      jobPlaceholdersDraft.forEach(p => { if (p && p.type) jobLastAddedType = p.type; });
       // v157 fix (Phase 15B review, item 3): any "Fill in serial" taps from
       // a previous, cancelled edit of this (or another) job must not carry
       // over — the conversion itself is deferred until Save Job (see
@@ -3504,7 +3727,6 @@ const ICO = {
       jobPendingPlaceholderConversions = [];
       populateJobSerialSelect(jobSerialsDraft, jobSerialsDraft[0] || '');
       if (typeof renderJobSerialChips === 'function') renderJobSerialChips();
-      updateJobMachineSummary();
       // v152 (Phase 12A Fix 5)
       clearMissingFlag(document.getElementById('jobCustomer'));
       clearMissingFlag(document.getElementById('jobTechnician'));
@@ -3512,15 +3734,20 @@ const ICO = {
     }
 
     let jobSerialsDraft = [];
+    // v159: pending job-chosen types for the currently-open job form — see
+    // initJobForm()'s comment above and renderJobSerialChips() below.
+    let jobSerialTypeDraft = {};
+    let jobLastAddedType = '';
     let machineModalMode = 'job';
     let pendingInspectJobId = null;
 
+    // #jobMachineSummaryText was never actually in the markup (a leftover
+    // from before the per-serial chip redesign), so this has always been a
+    // no-op; kept as a harmless no-op purely because a couple of unrelated
+    // handlers below still call it.
     function updateJobMachineSummary() {
       const el = document.getElementById('jobMachineSummaryText');
       if (!el) return;
-      const machine = readJobMachine() || 'No machine';
-      const serial = readJobSerial() || (jobSerialsDraft[0] || '');
-      el.textContent = serial ? (machine + ' · ' + serial) : (machine + ' · add serial');
     }
 
     function openMachineModal() {
@@ -3578,6 +3805,11 @@ const ICO = {
       modal.classList.add('show');
       modal.setAttribute('aria-hidden', 'false');
       if (input) setTimeout(() => { try { input.focus(); } catch (e) {} }, 0);
+      // v158 fix: hide the job form's/start screen's fixed Save/Cancel
+      // bar (z-index 400, restored via an inline !important style by the
+      // keyboard-pin logic below) right away, instead of waiting for a
+      // focus event to reach it — see __syncKeyboardPinBars above.
+      if (typeof window.__syncKeyboardPinBars === 'function') { try { window.__syncKeyboardPinBars(); } catch (e) {} }
     }
     function closeGenericTextModal() {
       const modal = document.getElementById('genericTextModal');
@@ -3586,6 +3818,114 @@ const ICO = {
       modal.classList.remove('show');
       modal.setAttribute('aria-hidden', 'true');
       genericTextPromptOnSave = null;
+      if (typeof window.__syncKeyboardPinBars === 'function') { try { window.__syncKeyboardPinBars(); } catch (e) {} }
+    }
+
+    // ===== v159 (Phase 15B follow-up): ONE shared machine-type picker =====
+    // Opens the #typePickerModal sheet. opts:
+    //   title             sheet heading (default 'Machine type')
+    //   current           the type to treat as already-selected — v159
+    //                     review fix #5: highlighted among the common/other-
+    //                     known buttons when it matches one of them
+    //   restrictToChecklist  true for the inspection picker: only types with
+    //                     an inspection checklist are offered (plus Other).
+    //                     v159 review fix #4: when `current` is a real type
+    //                     that ISN'T one of these (e.g. "Tray Washer" — no
+    //                     checklist exists for it), nothing is highlighted
+    //                     and a note explains why, rather than silently
+    //                     landing on some checklist type.
+    //   onSelect(type)    called once with the final type string, after the
+    //                     sheet closes
+    let typePickerOnSelect = null;
+    function openTypePicker(opts) {
+      opts = opts || {};
+      const modal = document.getElementById('typePickerModal');
+      if (!modal) return;
+      const title = document.getElementById('typePickerTitle');
+      if (title) title.textContent = opts.title || 'Machine type';
+      typePickerOnSelect = typeof opts.onSelect === 'function' ? opts.onSelect : null;
+      const restrict = !!opts.restrictToChecklist;
+      const current = String(opts.current || '').trim();
+      const currentKey = normalizeTypeKey(current);
+      const commonTypes = restrict ? checklistMachineTypes() : MACHINE_TYPE_COMMON;
+      const otherKnown = restrict ? [] : MACHINE_TYPE_OTHER_KNOWN;
+      const commonWrap = document.getElementById('typePickerCommon');
+      const otherWrap = document.getElementById('typePickerOtherKnown');
+      const otherWrapOuter = document.getElementById('typePickerOtherKnownWrap');
+      const noteEl = document.getElementById('typePickerNote');
+      const selectType = (t) => {
+        const cb = typePickerOnSelect;
+        closeTypePicker();
+        if (cb) cb(t);
+      };
+      const matchedCommon = commonTypes.some(t => normalizeTypeKey(t) === currentKey);
+      const matchedOther = otherKnown.some(t => normalizeTypeKey(t) === currentKey);
+      if (commonWrap) {
+        commonWrap.innerHTML = commonTypes.map((t, i) => {
+          const sel = currentKey && normalizeTypeKey(t) === currentKey ? ' selected' : '';
+          return `<button type="button" class="btn btn-outline type-picker-common-btn${sel}" data-i="${i}">${jobEsc(t)}</button>`;
+        }).join('');
+        commonWrap.querySelectorAll('.type-picker-common-btn').forEach((btn, i) => {
+          btn.addEventListener('click', () => selectType(commonTypes[i]));
+        });
+      }
+      if (otherWrapOuter) otherWrapOuter.classList.toggle('hidden', !otherKnown.length);
+      if (otherWrap) {
+        otherWrap.innerHTML = otherKnown.map((t, i) => {
+          const sel = currentKey && normalizeTypeKey(t) === currentKey ? ' selected' : '';
+          return `<button type="button" class="btn-link type-picker-known-btn${sel}" data-i="${i}">${jobEsc(t)}</button>`;
+        }).join('');
+        otherWrap.querySelectorAll('.type-picker-known-btn').forEach((btn, i) => {
+          btn.addEventListener('click', () => selectType(otherKnown[i]));
+        });
+      }
+      // v159 review fix #4: the current type is real but has no checklist
+      // (only possible when restrictToChecklist — otherwise every real type
+      // is offered somewhere above) — nothing above is highlighted, so say
+      // why and leave the "Other" box unfilled rather than pick for them.
+      if (noteEl) {
+        const showNote = restrict && current && !matchedCommon && !matchedOther;
+        noteEl.classList.toggle('hidden', !showNote);
+        noteEl.textContent = showNote ? `No inspection checklist for ${current} — pick a type` : '';
+      }
+      // "Other" text box + suggestions, collapsed until tapped.
+      const otherGroup = document.getElementById('typePickerOtherGroup');
+      const otherInput = document.getElementById('typePickerOtherInput');
+      const otherSave = document.getElementById('typePickerSave');
+      const otherBtn = document.getElementById('typePickerOtherBtn');
+      const otherList = document.getElementById('typePickerOtherList');
+      if (otherGroup) otherGroup.classList.add('hidden');
+      if (otherSave) otherSave.classList.add('hidden');
+      if (otherInput) otherInput.value = '';
+      if (otherList) otherList.innerHTML = customMachineTypeSuggestions().map(t => `<option value="${jobEsc(t)}">`).join('');
+      if (otherBtn) {
+        otherBtn.onclick = () => {
+          if (otherGroup) otherGroup.classList.remove('hidden');
+          if (otherSave) otherSave.classList.remove('hidden');
+          if (otherInput) setTimeout(() => { try { otherInput.focus(); } catch (e) {} }, 0);
+          if (typeof window.__syncKeyboardPinBars === 'function') { try { window.__syncKeyboardPinBars(); } catch (e) {} }
+        };
+      }
+      if (otherSave) {
+        otherSave.onclick = () => {
+          const v = normalizeMachineTypeInput(otherInput ? otherInput.value : '');
+          if (!v) return;
+          selectType(v);
+        };
+      }
+      modal.classList.remove('hidden');
+      modal.classList.add('show');
+      modal.setAttribute('aria-hidden', 'false');
+      if (typeof window.__syncKeyboardPinBars === 'function') { try { window.__syncKeyboardPinBars(); } catch (e) {} }
+    }
+    function closeTypePicker() {
+      const modal = document.getElementById('typePickerModal');
+      if (!modal) return;
+      modal.classList.add('hidden');
+      modal.classList.remove('show');
+      modal.setAttribute('aria-hidden', 'true');
+      typePickerOnSelect = null;
+      if (typeof window.__syncKeyboardPinBars === 'function') { try { window.__syncKeyboardPinBars(); } catch (e) {} }
     }
 
     function serialSortValue(s) {
@@ -3615,12 +3955,33 @@ const ICO = {
     // taggedJobSerials()'s "line" (the array index, used to key punchlist
     // items via item.line/serialForLine) is left completely untouched, so
     // existing punchlist data keeps working exactly as before.
+    // Restored to its pre-v159 shape (v159 had dropped the type segment,
+    // which broke punchlistMachineOptions()'s item-form chip labels — see
+    // the fix note there). Used for the PUNCHLIST item form's chips; the
+    // job form builds its own row markup directly (renderJobSerialChips)
+    // since each segment there is now its own tappable control.
     function jobSerialChipSegments(serial, machine) {
       const segs = [];
       segs.push((machine && machine.lineLabel) ? machine.lineLabel : '');
       segs.push(serial);
       if (machine && machine.machineType) segs.push(machine.machineType);
       return segs.filter(Boolean);
+    }
+    // v159 (Phase 15B follow-up, item 5): a real serial's type for DISPLAY
+    // on the job form's chip. A pending jobSerialTypeDraft choice — a new
+    // serial, an old untyped one showing job.machine (see initJobForm), or
+    // a deliberate tap-to-correct on an already-typed serial — always wins
+    // for display; nothing is written to the machine record until Save Job
+    // (see saveJobFromForm/resolveJobEquipmentSnapshot). "locked" mirrors
+    // the existing inspection-type-lock rule: once an inspection has
+    // confirmed a type, the job form can't change it (no draft is ever set
+    // for one), so it always shows the machine's own type.
+    function jobSerialEffectiveType(serial, machine) {
+      const locked = !!(machine && (machine.machineTypeSource === 'inspection' || machine.machineTypeSource === 'manager') && machine.machineType);
+      if (locked) return { type: machine.machineType, locked: true };
+      const draft = jobSerialTypeDraft[normalizeMatchText(serial)];
+      const type = draft || (machine && machine.machineType) || '';
+      return { type, locked: false };
     }
     // Placeholder machines (type only, no serial yet — roadmap 3.6). Kept
     // on the job itself (job.placeholderMachines), never in lx8_machines,
@@ -3648,28 +4009,81 @@ const ICO = {
       if (!Array.isArray(jobPlaceholdersDraft)) jobPlaceholdersDraft = [];
       if (!jobSerialsDraft.length && !jobPlaceholdersDraft.length) {
         wrap.innerHTML = '<div class="job-serial-empty">No serials yet</div>';
-        updateJobMachineSummary();
         return;
       }
       const realRows = jobSerialsDraft.map((serial, i) => {
         const machine = findMachineBySerial(serial);
-        const segs = jobSerialChipSegments(serial, machine);
+        const { type, locked } = jobSerialEffectiveType(serial, machine);
+        // v159 (item 5): the type is its own tappable segment — locked
+        // (inspection-confirmed) types render as plain text, everything
+        // else opens the shared picker.
+        const typeHtml = locked
+          ? `<span class="job-serial-locked-type">${jobEsc(type || '')}</span>`
+          : `<button type="button" class="btn-link job-serial-type-btn" data-kind="serial" data-idx="${i}">${jobEsc(type || 'Set type')}</button>`;
+        // Fix (review round 1, item 2): the line label is now ALWAYS a
+        // tappable pill — its own text once set, "Set line" before that —
+        // instead of disappearing into plain text once set. Same handler
+        // as before (.job-set-line), which already reads the current
+        // label as its pre-fill value, so tapping an existing label
+        // reopens the Set line sheet pre-filled with it.
+        const lineLabel = (machine && machine.lineLabel) || '';
+        const lineHtml = `<button type="button" class="btn-link job-set-line" data-kind="serial" data-idx="${i}">${jobEsc(lineLabel || 'Set line')}</button>`;
         return `<div class="job-serial-row" data-kind="serial" data-idx="${i}">
-          <span class="job-serial-text">${jobEsc(segs.join(' · '))}</span>
-          ${machine && machine.lineLabel ? '' : '<button type="button" class="btn-link job-set-line" data-kind="serial" data-idx="' + i + '">Set line</button>'}
+          <span class="job-serial-text">${jobEsc(serial)}</span>
+          ${typeHtml}
+          ${lineHtml}
           <button type="button" class="job-serial-chip job-serial-remove" data-idx="${i}" aria-label="Remove">×</button>
         </div>`;
       });
       const placeholderRows = jobPlaceholdersDraft.map((ph, i) => {
-        const segs = [ph.lineLabel || '', 'Placeholder', ph.type || ''].filter(Boolean);
+        const lineHtml = `<button type="button" class="btn-link job-set-line" data-kind="placeholder" data-idx="${i}">${jobEsc((ph.lineLabel || '') || 'Set line')}</button>`;
         return `<div class="job-serial-row" data-kind="placeholder" data-idx="${i}">
-          <span class="job-serial-text">${jobEsc(segs.join(' · '))}</span>
-          ${ph.lineLabel ? '' : '<button type="button" class="btn-link job-set-line" data-kind="placeholder" data-idx="' + i + '">Set line</button>'}
+          <span class="job-serial-text">Placeholder</span>
+          <button type="button" class="btn-link job-serial-type-btn" data-kind="placeholder" data-idx="${i}">${jobEsc(ph.type || 'Set type')}</button>
+          ${lineHtml}
           <button type="button" class="btn-link job-fill-serial" data-idx="${i}">Fill in serial</button>
           <button type="button" class="job-serial-chip job-placeholder-remove" data-idx="${i}" aria-label="Remove">×</button>
         </div>`;
       });
       wrap.innerHTML = realRows.join('') + placeholderRows.join('');
+      // v159 (item 5): tap a chip's type segment to change it via the
+      // shared picker. Locked (inspection-confirmed) real serials never get
+      // this button (see jobSerialEffectiveType above), matching the
+      // existing "inspection-confirmed type can't be changed from the job
+      // form" rule.
+      wrap.querySelectorAll('.job-serial-type-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.getAttribute('data-idx'));
+          const kind = btn.getAttribute('data-kind');
+          if (kind === 'placeholder') {
+            const ph = jobPlaceholdersDraft[idx];
+            if (!ph) return;
+            openTypePicker({
+              title: 'Machine type',
+              current: ph.type || '',
+              restrictToChecklist: false,
+              onSelect: (t) => {
+                ph.type = t;
+                jobLastAddedType = t;
+                renderJobSerialChips();
+              }
+            });
+          } else {
+            const serial = jobSerialsDraft[idx];
+            const machine = findMachineBySerial(serial);
+            const { type: current } = jobSerialEffectiveType(serial, machine);
+            openTypePicker({
+              title: 'Machine type',
+              current,
+              restrictToChecklist: false,
+              onSelect: (t) => {
+                jobSerialTypeDraft[normalizeMatchText(serial)] = t;
+                renderJobSerialChips();
+              }
+            });
+          }
+        });
+      });
       wrap.querySelectorAll('.job-serial-remove').forEach(btn => {
         btn.addEventListener('click', () => {
           const idx = Number(btn.getAttribute('data-idx'));
@@ -3735,12 +4149,21 @@ const ICO = {
               jobPlaceholdersDraft.splice(idx, 1);
               if (!jobSerialsDraft.some(s => jobSerialText(s).toLowerCase() === serial.toLowerCase())) jobSerialsDraft.push(serial);
               jobSerialsDraft = normalizeJobSerials(jobSerialsDraft);
+              // v159: the placeholder's type carries over to the new
+              // serial's draft type (unless it's turned out to already be a
+              // differently-typed known machine — same fill-only-if-empty
+              // rule convertPlaceholderToSerial() uses for the real write
+              // at Save Job time).
+              const existingMachine = findMachineBySerial(serial);
+              if (!(existingMachine && existingMachine.machineType) && ph.type) {
+                jobSerialTypeDraft[normalizeMatchText(serial)] = ph.type;
+              }
+              jobLastAddedType = (existingMachine && existingMachine.machineType) || ph.type || jobLastAddedType;
               renderJobSerialChips();
             }
           });
         });
       });
-      updateJobMachineSummary();
     }
     // Sets a machine's line label directly (an explicit one-tap user
     // action, so — unlike productionLine's fill-only-once rule — this may
@@ -3855,13 +4278,24 @@ const ICO = {
       if (!jobSerialsDraft.some(s => jobSerialText(s).toLowerCase() === v.toLowerCase())) jobSerialsDraft.push(v);
       jobSerialsDraft = normalizeJobSerials(jobSerialsDraft);
       input.value = '';
-      renderJobSerialChips();
       // v157 (Phase 15B, item 1 + approved amendment F): a known serial
       // suggests its sales order and machine type. Sales order is only
       // ever auto-filled into the job's own (currently empty) SO box when
       // this is the job's only serial — matches the existing single-serial
       // restriction on the reverse direction (job SO -> machine record).
       const machine = findMachineBySerial(v);
+      // v159 (item 5/9): a never-seen serial defaults to the type of the
+      // last serial added on this job (LX-8 if none) — so a single-type
+      // job with several new serials takes no more taps than before. A
+      // known serial keeps its own committed type untouched.
+      if (machine && machine.machineType) {
+        jobLastAddedType = machine.machineType;
+      } else {
+        const defaultType = jobLastAddedType || 'LX-8';
+        jobSerialTypeDraft[normalizeMatchText(v)] = defaultType;
+        jobLastAddedType = defaultType;
+      }
+      renderJobSerialChips();
       if (machine) {
         if (jobSerialsDraft.length === 1 && machine.salesOrder) {
           const soEl = document.getElementById('jobSO');
@@ -3873,34 +4307,52 @@ const ICO = {
       }
     }
     function addJobPlaceholderMachine() {
-      openGenericTextPrompt({
+      // v159 (item 2/4): "Add placeholder" opens the shared type picker
+      // instead of a free-text prompt.
+      openTypePicker({
         title: 'Add placeholder machine',
-        label: 'Machine type',
-        placeholder: 'e.g. LX-8',
-        value: readJobMachine() || '',
-        onSave: (type) => {
+        current: jobLastAddedType || 'LX-8',
+        restrictToChecklist: false,
+        onSelect: (type) => {
           if (!Array.isArray(jobPlaceholdersDraft)) jobPlaceholdersDraft = [];
           jobPlaceholdersDraft.push({ id: newPlaceholderId(), type, lineLabel: '', productionLine: '' });
+          jobLastAddedType = type;
           renderJobSerialChips();
         }
       });
     }
 
+    // v159 (Phase 15B follow-up, item 3): the inspection machine picker.
+    // #inspectMachine/#inspectMachineCustom are kept exactly as before
+    // (hidden — see the machineModal markup) purely so every other
+    // read/write of them elsewhere in the file keeps working unchanged;
+    // this function also syncs the new visible button's label. "known" is
+    // the checklist-driven list (checklistMachineTypes()), never a second
+    // hard-coded copy of the COMMON four.
     function setInspectMachineFields(value) {
       const sel = document.getElementById('inspectMachine');
       const custom = document.getElementById('inspectMachineCustom');
       if (!sel || !custom) return;
-      const known = ['LX-8', 'LX-7', 'LS-132', 'LS-133'];
+      const known = checklistMachineTypes();
       const v = String(value || '').trim();
-      if (!v || known.includes(v)) {
-        sel.value = v || 'LX-8';
+      // v159 review fix #4: never silently default to a checklist type
+      // (e.g. 'LX-8') just because a real type wasn't recognized or wasn't
+      // supplied — that's exactly the bug being fixed. A checklist type is
+      // shown as itself; any other real type (a machine with no checklist,
+      // such as "Tray Washer") is kept as-is via the hidden custom field so
+      // the button and Cancel/re-open still reflect the true type; only a
+      // genuinely blank value shows nothing.
+      if (known.includes(v)) {
+        sel.value = v;
         custom.value = '';
         custom.classList.add('hidden');
       } else {
         sel.value = '__other';
         custom.value = v;
-        custom.classList.remove('hidden');
+        custom.classList.add('hidden');
       }
+      const btn = document.getElementById('inspectMachineTypeBtn');
+      if (btn) btn.textContent = readInspectMachine() || 'Select type';
     }
 
     function readInspectMachine() {
@@ -3911,29 +4363,20 @@ const ICO = {
       return sel.value;
     }
 
-    function setJobMachineFields(value) {
-      const sel = document.getElementById('jobMachine');
-      const custom = document.getElementById('jobMachineCustom');
-      if (!sel || !custom) return;
-      const known = ['LX-8', 'LX-7', 'LS-132', 'LS-133'];
-      const v = String(value || '').trim();
-      if (!v || known.includes(v)) {
-        sel.value = v || 'LX-8';
-        custom.value = '';
-        custom.classList.add('hidden');
-      } else {
-        sel.value = '__other';
-        custom.value = v;
-        custom.classList.remove('hidden');
-      }
+    // v159: the standalone "New/Edit Inspection" screen's machine picker
+    // (#screenStart, #inpModel) — same shared-picker treatment as
+    // #inspectMachine above. #inpModel is a plain hidden input (not a
+    // <select>) so it can hold any "Other" value — see its markup.
+    function setInpModelField(value) {
+      const el = document.getElementById('inpModel');
+      if (!el) return;
+      el.value = String(value || '').trim() || 'LX-8';
+      const btn = document.getElementById('inpModelTypeBtn');
+      if (btn) btn.textContent = el.value;
     }
-
-    function readJobMachine() {
-      const sel = document.getElementById('jobMachine');
-      const custom = document.getElementById('jobMachineCustom');
-      if (!sel) return '';
-      if (sel.value === '__other') return (custom && custom.value.trim()) || '';
-      return sel.value;
+    function readInpModel() {
+      const el = document.getElementById('inpModel');
+      return el ? el.value : '';
     }
 
     function inspectJobsSource() {
@@ -4307,12 +4750,7 @@ const ICO = {
       currentSectionIndex = 0;
       applyJobToInspectionForm(job);
       const model = job.machine || 'LX-8';
-      const known = ['LX-8', 'LX-7', 'LS-132', 'LS-133'];
-      const modelEl = document.getElementById('inpModel');
-      if (modelEl) {
-        if (known.includes(model)) modelEl.value = model;
-        else modelEl.value = 'LX-8';
-      }
+      setInpModelField(checklistMachineTypes().includes(model) ? model : 'LX-8');
       fillInspectionSerialOptions(job);
       jobSerialsDraft = Array.isArray(job.serials) ? job.serials.slice() : [];
       machineModalMode = 'startInspect';
@@ -4321,7 +4759,12 @@ const ICO = {
       if (title) title.textContent = 'Link job';
       if (done) done.textContent = 'Start inspection';
       if (typeof populateInspectJobSelect === 'function') populateInspectJobSelect(job && job.id);
-      setInspectMachineFields(job.machine || 'LX-8');
+      // v159 review fix #4: no more blind 'LX-8' fallback here — job.machine
+      // (or, better, the pre-selected serial's own type just below) is the
+      // real type if there is one; if there truly isn't one yet, leave it
+      // blank rather than lying with a default, so the picker/gate below can
+      // show "no type selected" honestly.
+      setInspectMachineFields(job.machine || '');
       populateJobSerialSelect(jobSerialsDraft, jobSerialsDraft[0] || '');
       // v157 fix (Phase 15B review, item 2): populateJobSerialSelect() may
       // have pre-selected a single serial above — if that serial already
@@ -4530,7 +4973,9 @@ const ICO = {
         productionLine: (document.getElementById('jobProductionLine') || {}).value ? document.getElementById('jobProductionLine').value.trim() : '',
         status: document.getElementById('jobStatus').value || 'Planned',
         scope,
-        machine: readJobMachine(),
+        // v159 (item 7): job.machine is now a derived summary, computed
+        // below AFTER resolveJobEquipmentSnapshot has written each
+        // serial's own type — not read from a job-level picker (removed).
         serials: jobSerialsDraft.slice(),
         placeholderMachines: (jobPlaceholdersDraft || []).map(p => Object.assign({}, p)),
         notes: document.getElementById('jobNotes').value.trim(),
@@ -4571,7 +5016,19 @@ const ICO = {
       }
       // Phase 15A: resolve/stamp Customer, Site and Machine ids on every
       // real job save (not on load) — see resolveJobEquipmentSnapshot.
-      resolveJobEquipmentSnapshot(savedJob, { source: 'job-save' });
+      // v159 (item 6): each serial's own job-chosen type (jobSerialTypeDraft,
+      // built by the chips' shared-picker taps and by initJobForm's
+      // backward-compat defaults) is what gets applied — never a single
+      // job.machine value stamped onto every serial.
+      const serialTypeOverrides = {};
+      Object.keys(jobSerialTypeDraft || {}).forEach(k => { serialTypeOverrides[k] = jobSerialTypeDraft[k]; });
+      resolveJobEquipmentSnapshot(savedJob, { source: 'job-save', serialTypeOverrides });
+      // v159 (item 7): job.machine — kept only as a derived summary (most
+      // common type across this job's serials/placeholders) for old
+      // readers (parts-request headers, the inspection info card, old
+      // exports, old data) to keep working. Computed AFTER the line above
+      // so it reflects each serial's real, just-resolved type.
+      savedJob.machine = computeJobMachineSummary(savedJob);
       // Phase 7B: the success toast used to fire right here,
       // unconditionally, before saveJobs was even called. Now it only
       // fires once saveJobs' own return value confirms the write
@@ -5102,7 +5559,7 @@ const ICO = {
       currentInspection = ins;
       // Prefill form
       document.getElementById('inpCustomer').value = ins.customer || '';
-      document.getElementById('inpModel').value = ins.model || 'LX-8';
+      setInpModelField(ins.model || 'LX-8');
       document.getElementById('inpSerial').value = ins.serial || '';
       document.getElementById('inpTechnician').value = ins.technician || profileName() || '';
       document.getElementById('inpDate').value = ins.date || new Date().toISOString().slice(0, 10);
@@ -5117,7 +5574,7 @@ const ICO = {
       if (group) group.classList.remove('hidden');
       if (true) {
         document.getElementById('inpCustomer').value = ins.customer || '';
-        document.getElementById('inpModel').value = ins.model || 'LX-8';
+        setInpModelField(ins.model || 'LX-8');
         document.getElementById('inpSerial').value = ins.serial || '';
         document.getElementById('inpTechnician').value = ins.technician || profileName() || '';
         document.getElementById('inpDate').value = ins.date || '';
@@ -5139,7 +5596,7 @@ const ICO = {
     function initStartForm() {
       // Always start blank for a new inspection
       document.getElementById('inpCustomer').value = '';
-      document.getElementById('inpModel').value = 'LX-8';
+      setInpModelField('LX-8');
       document.getElementById('inpSerial').value = '';
       document.getElementById('inpSerial').placeholder = 'Enter serial number';
       document.getElementById('inpTechnician').value = '';
@@ -5414,6 +5871,15 @@ const ICO = {
     const machineDone = document.getElementById('machineModalDone');
     if (machineDone) machineDone.addEventListener('click', () => {
       if (machineModalMode === 'startInspect') {
+        // v159 review fix #4: inspections are checklist-driven, so a type
+        // with no checklist (or no type picked at all yet) can't start
+        // one — require a real checklist type first rather than silently
+        // starting against the wrong template.
+        const currentType = (typeof readInspectMachine === 'function') ? readInspectMachine() : '';
+        if (!currentType || !typeHasChecklist(currentType)) {
+          toast(currentType ? `No inspection checklist for ${currentType} — pick a type` : 'Pick a machine type to start the inspection');
+          return;
+        }
         startInspectionFromMachinePopup();
         return;
       }
@@ -5438,6 +5904,12 @@ const ICO = {
     if (genericTextModalEl) genericTextModalEl.addEventListener('click', (e) => {
       if (e.target.id === 'genericTextModal') closeGenericTextModal();
     });
+    const typePickerCancel = document.getElementById('typePickerCancel');
+    if (typePickerCancel) typePickerCancel.addEventListener('click', closeTypePicker);
+    const typePickerModalEl = document.getElementById('typePickerModal');
+    if (typePickerModalEl) typePickerModalEl.addEventListener('click', (e) => {
+      if (e.target.id === 'typePickerModal') closeTypePicker();
+    });
     const addSerialBtn = document.getElementById('btnAddJobSerial');
     if (addSerialBtn) addSerialBtn.addEventListener('click', addJobSerialFromInput);
     const serialInp = document.getElementById('jobSerialInput');
@@ -5458,6 +5930,19 @@ const ICO = {
     });
     const btnAddJobPlaceholder = document.getElementById('btnAddJobPlaceholder');
     if (btnAddJobPlaceholder) btnAddJobPlaceholder.addEventListener('click', addJobPlaceholderMachine);
+    // v158 simplification: "+ Production line" reveals the (rare)
+    // Production line field and hides itself; the field itself, and how
+    // it's saved, are unchanged.
+    const btnShowJobProductionLine = document.getElementById('btnShowJobProductionLine');
+    if (btnShowJobProductionLine) btnShowJobProductionLine.addEventListener('click', () => {
+      const grp = document.getElementById('jobProductionLineGroup');
+      if (grp) {
+        grp.classList.remove('hidden');
+        const inp = document.getElementById('jobProductionLine');
+        if (inp) inp.focus();
+      }
+      btnShowJobProductionLine.classList.add('hidden');
+    });
     const jobSerialSel = document.getElementById('inspectSerialSelect');
     if (jobSerialSel) {
       jobSerialSel.addEventListener('change', () => {
@@ -5498,21 +5983,26 @@ const ICO = {
         }
       });
     }
-    const jobMachineSel = document.getElementById('jobMachine');
-    if (jobMachineSel) {
-      jobMachineSel.addEventListener('change', () => {
-        const custom = document.getElementById('jobMachineCustom');
-        if (!custom) return;
-        if (jobMachineSel.value === '__other') {
-          custom.classList.remove('hidden');
-          custom.focus();
-        } else {
-          custom.classList.add('hidden');
-          custom.value = '';
-        }
-        updateJobMachineSummary();
+    // v159 (item 3): the two "inspection machine picker" buttons — both
+    // open the shared picker restricted to checklist types.
+    const inspectMachineTypeBtn = document.getElementById('inspectMachineTypeBtn');
+    if (inspectMachineTypeBtn) inspectMachineTypeBtn.addEventListener('click', () => {
+      openTypePicker({
+        title: 'Machine type',
+        current: readInspectMachine(),
+        restrictToChecklist: true,
+        onSelect: (t) => setInspectMachineFields(t)
       });
-    }
+    });
+    const inpModelTypeBtn = document.getElementById('inpModelTypeBtn');
+    if (inpModelTypeBtn) inpModelTypeBtn.addEventListener('click', () => {
+      openTypePicker({
+        title: 'Machine type',
+        current: readInpModel(),
+        restrictToChecklist: true,
+        onSelect: (t) => setInpModelField(t)
+      });
+    });
     document.getElementById('btnSaveJob').addEventListener('click', () => saveJobFromForm());
     document.getElementById('btnDeleteJob').addEventListener('click', (e) => {
       e.preventDefault();
@@ -5565,7 +6055,9 @@ const ICO = {
       const customer = String(job.customer || '').trim();
       const site = String(job.site || '').trim();
       const label = site ? ((customer || 'Job') + ' – ' + site) : (customer || 'Job');
-      return isInternalId(label) ? 'Job' : label;
+      const base = isInternalId(label) ? 'Job' : label;
+      const line = String((job && job.productionLine) || '').trim();
+      return line ? (base + ' · ' + line) : base;
     }
 
     function jobSubLine(job) {
@@ -5731,8 +6223,7 @@ const ICO = {
         if (cust) cust.value = job.customer || cust.value;
         const tech = document.getElementById('inpTechnician');
         if (tech && !tech.value) tech.value = job.technician || ((typeof profileName === 'function') ? profileName() : '') || '';
-        const model = document.getElementById('inpModel');
-        if (model && job.machine) model.value = job.machine;
+        if (job.machine) setInpModelField(job.machine);
       });
     })();
 
@@ -5958,8 +6449,7 @@ const ICO = {
       if (job) applyJobToInspectionForm(job);
       else applyJobToInspectionForm(null);
       const model = (job && job.machine) || 'LX-8';
-      const modelEl = document.getElementById('inpModel');
-      if (modelEl) modelEl.value = model;
+      setInpModelField(model);
       jobSerialsDraft = (job && Array.isArray(job.serials)) ? job.serials.slice() : [];
       if (typeof fillInspectionSerialOptions === 'function' && job) fillInspectionSerialOptions(job);
       machineModalMode = 'startInspect';
@@ -7188,6 +7678,13 @@ const ICO = {
         const qr = document.getElementById('profileQrViewer');
         if (qr && !qr.hidden) { closeProfileQrViewer(); closed = true; }
         if (document.body.classList.contains('search-open')) { closeSearch(); closed = true; }
+        ['edPinSheet','edPreviewSheet','edFormSheet','edBackupAskSheet'].forEach((sid) => {
+          const el = document.getElementById(sid);
+          if (el && el.classList.contains('show')) {
+            try { if (typeof window.editorCloseAllSheets === 'function') window.editorCloseAllSheets(); } catch (e2) {}
+            closed = true;
+          }
+        });
       } catch (e) {}
       return closed;
     }
@@ -7213,11 +7710,16 @@ const ICO = {
       tryClose('plLinkJobSheet', typeof closePunchlistLinkSheet === 'function' ? closePunchlistLinkSheet : null);
       tryClose('partsShareSheet', typeof closePartsShareSheet === 'function' ? closePartsShareSheet : null);
       tryClose('plStartSheet', typeof closePunchlistStartSheet === 'function' ? closePunchlistStartSheet : null);
+      try { if (typeof window.editorCloseAllSheets === 'function') window.editorCloseAllSheets(); } catch (e) {}
     }
 
     document.getElementById('btnHeaderBack').addEventListener('click', () => {
       // Back first dismisses any open sheet, dialog, modal, or search UI.
       // A second tap then navigates to the previous page.
+      if (document.body.classList.contains('on-editor') && typeof window.editorOnHeaderBack === 'function') {
+        window.editorOnHeaderBack();
+        return;
+      }
       if (closeOpenOverlaysForBack()) return;
 
       const active = document.querySelector('.screen.active');
@@ -9808,14 +10310,6 @@ const IDB_NAME = "FieldPunchlistDB";
         selectedIdx = options.findIndex(o => o.kind === 'machine' && o.machine && o.machine.id === equipVal);
       }
       if (selectedIdx < 0) selectedIdx = options.findIndex(o => o.kind === 'none');
-      let setLineLink = document.getElementById('f-line-setlabel');
-      if (!setLineLink && row.parentNode) {
-        setLineLink = document.createElement('button');
-        setLineLink.type = 'button';
-        setLineLink.id = 'f-line-setlabel';
-        setLineLink.className = 'btn-link';
-        row.parentNode.insertBefore(setLineLink, row.nextSibling);
-      }
       function selectOption(idx) {
         selectedIdx = idx;
         const opt = options[idx];
@@ -9841,33 +10335,13 @@ const IDB_NAME = "FieldPunchlistDB";
             selectOption(idx === selectedIdx ? options.findIndex(o => o.kind === 'none') : idx);
           });
         });
-        // One-tap "set line" for the currently-selected real machine, only
-        // when it doesn't have a line label yet (roadmap 3.3's "one-tap
-        // correct-once action"). Not offered for a placeholder or "No
-        // machine".
-        const opt = options[selectedIdx];
-        if (setLineLink) {
-          if (opt && opt.kind === 'machine' && !(opt.machine && opt.machine.lineLabel)) {
-            const serial = opt.serial;
-            setLineLink.hidden = false;
-            setLineLink.textContent = 'Set line for ' + serial;
-            setLineLink.onclick = () => {
-              openGenericTextPrompt({
-                title: 'Set line',
-                label: 'Machine line label',
-                placeholder: 'e.g. Line 1',
-                value: '',
-                onSave: (v) => {
-                  const m = findOrCreateMachine(serial);
-                  if (m) setMachineLineLabel(m.id, v);
-                  paint();
-                }
-              });
-            };
-          } else {
-            setLineLink.hidden = true;
-          }
-        }
+        // v158 simplification: the punchlist item form's one-tap "Set line
+        // for <serial>" link (#f-line-setlabel) was removed per the user's
+        // request — line labels are rare and technicians shouldn't see
+        // this in the everyday item-entry flow. Setting a line label is
+        // still available from the job form (next to the serial/placeholder
+        // chip). Chips here still display a machine's line label when one
+        // is already set (see the label-building code above).
       }
       paint();
     }
@@ -13276,8 +13750,27 @@ function tcRenderEntryList(listEl, offset) {
       const hasFinePointer = () => {
         try { return !!(window.matchMedia && window.matchMedia('(pointer: fine)').matches); } catch (e) { return false; }
       };
+      // v158 fix: #screenJobForm's and #screenStart's Save/Cancel bar
+      // (SEL above) carries z-index 400 and, via apply() below, an
+      // inline `display/visibility ... !important` that beats any
+      // stylesheet rule — including #genericTextModal's own z-index 340.
+      // Without this check, whenever focus left an input (e.g. tapping
+      // "Set line" itself, or the sheet's Save/Cancel buttons), the
+      // focusout handler re-showed this bar on top of the Set
+      // line/Fill in serial/Add placeholder sheet, intercepting taps
+      // meant for it. genericModalOpen() makes apply() keep the bar
+      // hidden for as long as that sheet is open, regardless of pointer
+      // type or keyboard state.
+      const genericModalOpen = () => {
+        const m = document.getElementById('genericTextModal');
+        // v159: the shared type picker sheet (#typePickerModal) is opened
+        // from the same screens (job form, screenStart) and needs the same
+        // "keep this Save/Cancel bar hidden while I'm open" treatment.
+        const t = document.getElementById('typePickerModal');
+        return !!((m && m.classList.contains('show')) || (t && t.classList.contains('show')));
+      };
       const apply = (hideRequested) => {
-        const hide = !!hideRequested && !hasFinePointer();
+        const hide = (!!hideRequested && !hasFinePointer()) || genericModalOpen();
         document.body.classList.toggle('kb-open', !!hide);
         document.querySelectorAll(SEL).forEach((bar) => {
           bar.style.setProperty('display', hide ? 'none' : 'flex', 'important');
@@ -13317,6 +13810,11 @@ function tcRenderEntryList(listEl, offset) {
         window.visualViewport.addEventListener('resize', syncKb);
         window.visualViewport.addEventListener('scroll', syncKb);
       }
+      // v158 fix: openGenericTextPrompt()/closeGenericTextModal() call
+      // this directly so the Save/Cancel bar hides the instant the sheet
+      // opens (rather than waiting on a focus/focusout event to reach
+      // apply()) and is correctly restored the instant it closes.
+      window.__syncKeyboardPinBars = syncKb;
 
     })();
 
@@ -13858,9 +14356,1835 @@ function tcRenderEntryList(listEl, offset) {
         else if (mq.addListener) mq.addListener(onChange);
       } catch (e) {}
     }
+    // ========== LOCAL DATA EDITOR (v160 / Phase 15C) ==========
+    function isConfirmedTypeSource(src) {
+      return src === 'inspection' || src === 'manager';
+    }
+    function jobProductionLineOf(job) {
+      if (!job) return '';
+      const direct = String(job.productionLine || '').trim();
+      if (direct) return direct;
+      try {
+        const ids = Array.isArray(job.equipmentIds) ? job.equipmentIds : [];
+        const machines = loadMachines() || [];
+        for (let i = 0; i < ids.length; i++) {
+          const m = machines.find(x => x && x.id === ids[i]);
+          if (m && m.productionLine) return String(m.productionLine).trim();
+        }
+      } catch (e) {}
+      return '';
+    }
+    function suggestProductionLineFromSiteName(name) {
+      const s = String(name || '').trim();
+      if (!s) return '';
+      const m = s.match(/\bline\s*([0-9]+[a-z]?)\b/i);
+      if (m) return 'Line ' + m[1];
+      if (/\bline\b/i.test(s)) {
+        const rest = s.replace(/^.*?\bline\b/i, 'Line').trim();
+        const short = rest.split(/\s+/).slice(0, 2).join(' ');
+        return short || '';
+      }
+      return '';
+    }
+    function siteNameContainsLine(name) {
+      return /\bline\b/i.test(String(name || ''));
+    }
+    function fuzzySerialKey(serial) {
+      return String(serial || '').toLowerCase().replace(/[\s\-]+/g, '').replace(/^0+/, '');
+    }
+    function oldPunchlistSlotText(line) {
+      const s = String(line || '').trim();
+      if (!s) return false;
+      if (/^\d{1,2}$/.test(s)) return true;
+      if (/^(lh|rh|epi|left|right)$/i.test(s)) return true;
+      return false;
+    }
+    function editorStripPhotoFields(rec) {
+      if (!rec || typeof rec !== 'object') return rec;
+      const copy = JSON.parse(JSON.stringify(rec));
+      ['photo', 'photos', 'photoId', 'photoDataUrl', 'photoThumb', 'images'].forEach((k) => {
+        if (Object.prototype.hasOwnProperty.call(copy, k)) delete copy[k];
+      });
+      if (Array.isArray(copy.parts)) {
+        copy.parts = copy.parts.map((p) => {
+          if (!p || typeof p !== 'object') return p;
+          const q = Object.assign({}, p);
+          delete q.photoId; delete q.photoThumb; delete q.photo;
+          return q;
+        });
+      }
+      return copy;
+    }
+    function editorStableJson(v) {
+      return JSON.stringify(v);
+    }
+
+    const EDITOR_PIN_KEY = 'lx8_editor_settings';
+    const EDITOR_LOG_KEY = 'lx8_edit_log';
+    let editorSessionBackupAsked = false;
+    let editorView = { name: 'home' };
+    let editorPendingApply = null;
+    let editorPinMode = 'enter'; // enter | set | confirm | reset
+    let editorPinFirst = '';
+    let editorNeedsTypeOpen = false;
+
+    function editorSettingsLoad() {
+      try {
+        const raw = localStorage.getItem(EDITOR_PIN_KEY);
+        if (!raw) return { pin: '' };
+        const p = JSON.parse(raw);
+        return (p && typeof p === 'object') ? p : { pin: '' };
+      } catch (e) { return { pin: '' }; }
+    }
+    function editorSettingsSave(next) {
+      const cur = Object.assign({ pin: '' }, editorSettingsLoad(), next || {});
+      try { localStorage.setItem(EDITOR_PIN_KEY, JSON.stringify(cur)); } catch (e) {}
+      return cur;
+    }
+    function editorLogLoad() {
+      try {
+        const src = STORE.load('editLog');
+        return Array.isArray(src) ? src : [];
+      } catch (e) {
+        try { return JSON.parse(localStorage.getItem(EDITOR_LOG_KEY) || '[]'); } catch (e2) { return []; }
+      }
+    }
+    function editorLogSave(list) {
+      const next = Array.isArray(list) ? list : [];
+      try { return STORE.save('editLog', next); } catch (e) {
+        try { localStorage.setItem(EDITOR_LOG_KEY, JSON.stringify(next)); } catch (e2) {}
+        return false;
+      }
+    }
+    function editorLogBytes(list) {
+      try { return editorStableJson(list || editorLogLoad()).length; } catch (e) { return 0; }
+    }
+
+    function editorCustomerName(id) {
+      if (!id) return '';
+      const c = (loadCustomers() || []).find(x => x && x.id === id);
+      return c ? (c.name || '') : '';
+    }
+    function editorSiteName(id) {
+      if (!id) return '';
+      const s = (loadSites() || []).find(x => x && x.id === id);
+      return s ? (s.name || '') : '';
+    }
+    function editorWalkPunchlist(cb) {
+      let pl = null;
+      try { if (typeof window.getPunchlistBackup === 'function') pl = window.getPunchlistBackup(); } catch (e) {}
+      if (!pl || !pl.jobs) return;
+      Object.keys(pl.jobs).forEach((key) => {
+        (pl.jobs[key] || []).forEach((item, idx) => cb(pl, key, item, idx));
+      });
+    }
+    function editorPunchlistSave(pl) {
+      if (typeof window.setPunchlistBackup === 'function') return window.setPunchlistBackup(pl);
+      return Promise.resolve(false);
+    }
+    function editorCountUses(equipmentId, serial) {
+      const out = { jobs: 0, inspections: 0, punchlistItems: 0, partsHeaders: 0, partsLines: 0, records: [] };
+      const norm = normalizeMatchText(serial);
+      (loadJobs() || []).forEach((j) => {
+        if (!j) return;
+        const hit = (j.equipmentIds || []).indexOf(equipmentId) >= 0 ||
+          (Array.isArray(j.serials) && j.serials.some(s => normalizeMatchText(s) === norm));
+        if (hit) { out.jobs += 1; out.records.push({ kind: 'job', id: j.id, title: jobDisplayName(j) }); }
+      });
+      (loadInspections() || []).forEach((i) => {
+        if (!i) return;
+        if (i.equipmentId === equipmentId || (norm && normalizeMatchText(i.serial) === norm)) {
+          out.inspections += 1;
+          out.records.push({ kind: 'inspection', id: i.id, title: (i.customer || 'Inspection') + ' · ' + (i.serial || '') });
+        }
+      });
+      editorWalkPunchlist((_pl, key, item) => {
+        if (!item) return;
+        if (item.equipmentId === equipmentId || (norm && normalizeMatchText(item.serial) === norm)) {
+          out.punchlistItems += 1;
+          out.records.push({ kind: 'punchlist', listKey: key, id: item.id, title: (item.description || item.location || item.serial || 'Item') });
+        }
+      });
+      (loadPartsRequests() || []).forEach((req) => {
+        if (!req) return;
+        if (req.equipmentId === equipmentId || (norm && normalizeMatchText(req.serial) === norm)) {
+          out.partsHeaders += 1;
+          out.records.push({ kind: 'parts', id: req.id, title: 'Parts request' + (req.seq ? ' #' + req.seq : '') });
+        }
+        (req.parts || []).forEach((line) => {
+          if (!line) return;
+          if (line.equipmentId === equipmentId || (norm && normalizeMatchText(line.serial) === norm)) {
+            out.partsLines += 1;
+            out.records.push({ kind: 'partsLine', id: line.id, parent: req.id, title: line.description || line.partNumber || 'Part' });
+          }
+        });
+      });
+      return out;
+    }
+
+    function editorSnapshotRecords(spec) {
+      // spec: { machines:[id], jobs:[id], inspections:[id], sites:[id], customers:[id],
+      //         partsRequests:[id], punchlistItems:[{listKey,id}] }
+      const out = {
+        machines: [], jobs: [], inspections: [], sites: [], customers: [],
+        partsRequests: [], punchlistItems: []
+      };
+      const pick = (list, ids, key) => {
+        (list || []).forEach((rec) => {
+          if (rec && ids.indexOf(rec.id) >= 0) out[key].push(editorStripPhotoFields(rec));
+        });
+      };
+      if (spec.machines) pick(loadMachines(), spec.machines, 'machines');
+      if (spec.jobs) pick(loadJobs(), spec.jobs, 'jobs');
+      if (spec.inspections) pick(loadInspections(), spec.inspections, 'inspections');
+      if (spec.sites) pick(loadSites(), spec.sites, 'sites');
+      if (spec.customers) pick(loadCustomers(), spec.customers, 'customers');
+      if (spec.partsRequests) pick(loadPartsRequests(), spec.partsRequests, 'partsRequests');
+      if (spec.punchlistItems && spec.punchlistItems.length) {
+        const want = {};
+        spec.punchlistItems.forEach((p) => {
+          want[p.listKey + '\t' + p.id] = true;
+        });
+        editorWalkPunchlist((_pl, key, item) => {
+          if (item && want[key + '\t' + item.id]) {
+            out.punchlistItems.push({ listKey: key, id: item.id, rec: editorStripPhotoFields(item) });
+          }
+        });
+      }
+      return out;
+    }
+
+    const EDITOR_PHOTO_KEYS = ['photo', 'photos', 'photoId', 'photoDataUrl', 'photoThumb', 'images'];
+    const EDITOR_LINE_PHOTO_KEYS = ['photo', 'photoId', 'photoThumb'];
+    function editorReapplyLivePhotos(restored, live) {
+      if (!restored || typeof restored !== 'object') return restored;
+      if (!live || typeof live !== 'object') return restored;
+      EDITOR_PHOTO_KEYS.forEach((k) => {
+        if (Object.prototype.hasOwnProperty.call(live, k)) restored[k] = live[k];
+        else delete restored[k];
+      });
+      if (Array.isArray(restored.parts) && Array.isArray(live.parts)) {
+        const byId = {};
+        live.parts.forEach((p) => { if (p && p.id) byId[p.id] = p; });
+        restored.parts.forEach((p, i) => {
+          if (!p || typeof p !== 'object') return;
+          const liveP = (p.id && byId[p.id]) || live.parts[i];
+          if (!liveP) return;
+          EDITOR_LINE_PHOTO_KEYS.forEach((k) => {
+            if (Object.prototype.hasOwnProperty.call(liveP, k)) p[k] = liveP[k];
+            else delete p[k];
+          });
+        });
+      }
+      return restored;
+    }
+    function editorRestoreSnapshot(snap) {
+      if (!snap) return;
+      const writeById = (loadFn, saveFn, rows) => {
+        if (!rows || !rows.length) return;
+        const list = loadFn() || [];
+        const map = {};
+        rows.forEach((r) => { if (r && r.id) map[r.id] = r; });
+        const next = list.map((cur) => {
+          if (!cur || !map[cur.id]) return cur;
+          const restored = JSON.parse(JSON.stringify(map[cur.id]));
+          return editorReapplyLivePhotos(restored, cur);
+        });
+        const have = new Set(next.map(r => r && r.id));
+        rows.forEach((r) => {
+          if (r && r.id && !have.has(r.id)) next.push(JSON.parse(JSON.stringify(r)));
+        });
+        saveFn(next);
+      };
+      writeById(loadMachines, saveMachines, snap.machines);
+      writeById(loadJobs, saveJobs, snap.jobs);
+      writeById(loadInspections, saveInspections, snap.inspections);
+      writeById(loadSites, saveSites, snap.sites);
+      writeById(loadCustomers, saveCustomers, snap.customers);
+      writeById(loadPartsRequests, savePartsRequests, snap.partsRequests);
+      if (snap.punchlistItems && snap.punchlistItems.length && typeof window.getPunchlistBackup === 'function') {
+        const pl = window.getPunchlistBackup();
+        snap.punchlistItems.forEach((row) => {
+          const arr = (pl.jobs && pl.jobs[row.listKey]) || [];
+          const idx = arr.findIndex(it => it && it.id === row.id);
+          if (idx < 0 || !row.rec) return;
+          const restored = Object.assign({}, row.rec);
+          editorReapplyLivePhotos(restored, arr[idx]);
+          arr[idx] = restored;
+        });
+        return editorPunchlistSave(pl);
+      }
+      return Promise.resolve(true);
+    }
+
+    function editorCurrentMatchesAfter(after) {
+      if (!after) return { ok: true, mismatches: [] };
+      const mismatches = [];
+      const checkList = (loadFn, rows, label) => {
+        (rows || []).forEach((row) => {
+          const cur = (loadFn() || []).find(x => x && x.id === row.id);
+          if (!cur) { mismatches.push(label + ' ' + row.id + ' missing'); return; }
+          if (editorStableJson(editorStripPhotoFields(cur)) !== editorStableJson(editorStripPhotoFields(row))) {
+            mismatches.push(label + ' changed since this edit');
+          }
+        });
+      };
+      checkList(loadMachines, after.machines, 'Machine');
+      checkList(loadJobs, after.jobs, 'Job');
+      checkList(loadInspections, after.inspections, 'Inspection');
+      checkList(loadSites, after.sites, 'Site');
+      checkList(loadCustomers, after.customers, 'Customer');
+      checkList(loadPartsRequests, after.partsRequests, 'Parts request');
+      (after.punchlistItems || []).forEach((row) => {
+        let found = null;
+        editorWalkPunchlist((_pl, key, item) => {
+          if (key === row.listKey && item && item.id === row.id) found = item;
+        });
+        if (!found) { mismatches.push('Punchlist item missing'); return; }
+        if (editorStableJson(editorStripPhotoFields(found)) !== editorStableJson(editorStripPhotoFields(row.rec))) {
+          mismatches.push('Punchlist item changed since this edit');
+        }
+      });
+      return { ok: mismatches.length === 0, mismatches };
+    }
+
+    function editorRemoveIds(loadFn, saveFn, ids) {
+      const drop = new Set(ids || []);
+      saveFn((loadFn() || []).filter(r => r && !drop.has(r.id)));
+    }
+
+    function editorDedupeJobPointers(j) {
+      if (!j) return;
+      if (Array.isArray(j.equipmentIds)) {
+        const seen = new Set();
+        j.equipmentIds = j.equipmentIds.filter((id) => {
+          if (!id || seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        });
+      }
+      if (Array.isArray(j.serials)) {
+        const seen = new Set();
+        j.serials = j.serials.filter((s) => {
+          const k = normalizeMatchText(s);
+          if (!k || seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+      }
+    }
+    function editorRepointSerialAndId(oldId, newId, oldSerial, newSerial) {
+      const oldNorm = normalizeMatchText(oldSerial);
+      const swapText = (v) => (normalizeMatchText(v) === oldNorm ? newSerial : v);
+      const jobs = loadJobs() || [];
+      jobs.forEach((j) => {
+        if (!j) return;
+        if (Array.isArray(j.equipmentIds)) j.equipmentIds = j.equipmentIds.map(id => id === oldId ? newId : id);
+        if (Array.isArray(j.serials)) j.serials = j.serials.map(swapText);
+        editorDedupeJobPointers(j);
+      });
+      saveJobs(jobs);
+      const inspections = loadInspections() || [];
+      inspections.forEach((i) => {
+        if (!i) return;
+        if (i.equipmentId === oldId) i.equipmentId = newId;
+        if (normalizeMatchText(i.serial) === oldNorm) i.serial = newSerial;
+      });
+      saveInspections(inspections);
+      const reqs = loadPartsRequests() || [];
+      reqs.forEach((req) => {
+        if (!req) return;
+        if (req.equipmentId === oldId) req.equipmentId = newId;
+        if (normalizeMatchText(req.serial) === oldNorm) req.serial = newSerial;
+        (req.parts || []).forEach((line) => {
+          if (!line) return;
+          if (line.equipmentId === oldId) line.equipmentId = newId;
+          if (normalizeMatchText(line.serial) === oldNorm) line.serial = newSerial;
+        });
+      });
+      savePartsRequests(reqs);
+      if (typeof window.getPunchlistBackup === 'function') {
+        const pl = window.getPunchlistBackup();
+        Object.keys(pl.jobs || {}).forEach((key) => {
+          (pl.jobs[key] || []).forEach((item) => {
+            if (!item) return;
+            if (item.equipmentId === oldId) item.equipmentId = newId;
+            if (normalizeMatchText(item.serial) === oldNorm) item.serial = newSerial;
+          });
+        });
+        return editorPunchlistSave(pl);
+      }
+      return Promise.resolve(true);
+    }
+
+    function editorSiteIdsTouched(siteId) {
+      const jobs = [], inspections = [], parts = [], punch = [], machines = [];
+      (loadJobs() || []).forEach(j => { if (j && j.siteId === siteId) jobs.push(j.id); });
+      (loadInspections() || []).forEach(i => { if (i && i.siteId === siteId) inspections.push(i.id); });
+      (loadPartsRequests() || []).forEach(r => {
+        if (!r) return;
+        if (r.siteId === siteId) parts.push(r.id);
+        else if ((r.parts || []).some(p => p && p.siteId === siteId)) parts.push(r.id);
+      });
+      editorWalkPunchlist((_pl, key, item) => {
+        if (item && item.siteId === siteId) punch.push({ listKey: key, id: item.id });
+      });
+      (loadMachines() || []).forEach(m => {
+        if (!m) return;
+        if (m.currentSiteId === siteId) machines.push(m.id);
+        else if ((m.moveLog || []).some(e => e && (e.fromSiteId === siteId || e.toSiteId === siteId))) machines.push(m.id);
+      });
+      return { jobs, inspections, partsRequests: parts, punchlistItems: punch, machines };
+    }
+
+    function editorApplyPrepared(prepared) {
+      // prepared.mutate() does the writes. prepared.spec lists records to snapshot.
+      return prepared.mutate();
+    }
+
+    function editorIdIndex() {
+      return {
+        machines: (loadMachines() || []).map(x => x && x.id).filter(Boolean),
+        sites: (loadSites() || []).map(x => x && x.id).filter(Boolean),
+        customers: (loadCustomers() || []).map(x => x && x.id).filter(Boolean)
+      };
+    }
+    function editorCreatedSince(beforeIdx) {
+      const now = editorIdIndex();
+      const diff = (kind) => now[kind].filter(id => (beforeIdx[kind] || []).indexOf(id) < 0);
+      return { machines: diff('machines'), sites: diff('sites'), customers: diff('customers') };
+    }
+    function editorDeleteCreated(created) {
+      if (!created) return;
+      if (created.machines && created.machines.length) editorRemoveIds(loadMachines, saveMachines, created.machines);
+      if (created.sites && created.sites.length) editorRemoveIds(loadSites, saveSites, created.sites);
+      if (created.customers && created.customers.length) editorRemoveIds(loadCustomers, saveCustomers, created.customers);
+    }
+    function editorPointersToCreated(created) {
+      const hits = [];
+      if (!created) return hits;
+      const siteSet = new Set(created.sites || []);
+      const machSet = new Set(created.machines || []);
+      const custSet = new Set(created.customers || []);
+      if (!siteSet.size && !machSet.size && !custSet.size) return hits;
+      (loadJobs() || []).forEach((j) => {
+        if (!j) return;
+        if (siteSet.has(j.siteId)) hits.push({ kind: 'job', id: j.id, why: 'job still points at the created site' });
+        if (custSet.has(j.customerId)) hits.push({ kind: 'job', id: j.id, why: 'job still points at the created customer' });
+        (j.equipmentIds || []).forEach((eid) => {
+          if (machSet.has(eid)) hits.push({ kind: 'job', id: j.id, why: 'job still points at the created machine' });
+        });
+      });
+      (loadInspections() || []).forEach((i) => {
+        if (!i) return;
+        if (siteSet.has(i.siteId)) hits.push({ kind: 'inspection', id: i.id, why: 'inspection still points at the created site' });
+        if (custSet.has(i.customerId)) hits.push({ kind: 'inspection', id: i.id, why: 'inspection still points at the created customer' });
+        if (machSet.has(i.equipmentId)) hits.push({ kind: 'inspection', id: i.id, why: 'inspection still points at the created machine' });
+      });
+      (loadPartsRequests() || []).forEach((r) => {
+        if (!r) return;
+        if (siteSet.has(r.siteId)) hits.push({ kind: 'parts', id: r.id, why: 'parts request still points at the created site' });
+        if (custSet.has(r.customerId)) hits.push({ kind: 'parts', id: r.id, why: 'parts request still points at the created customer' });
+        if (machSet.has(r.equipmentId)) hits.push({ kind: 'parts', id: r.id, why: 'parts request still points at the created machine' });
+      });
+      (loadSites() || []).forEach((s) => {
+        if (s && custSet.has(s.customerId)) hits.push({ kind: 'site', id: s.id, why: 'site still points at the created customer' });
+      });
+      (loadMachines() || []).forEach((m) => {
+        if (!m) return;
+        if (siteSet.has(m.currentSiteId)) hits.push({ kind: 'machine', id: m.id, why: 'machine still points at the created site' });
+        if (custSet.has(m.currentCustomerId)) hits.push({ kind: 'machine', id: m.id, why: 'machine still points at the created customer' });
+      });
+      editorWalkPunchlist((_pl, key, item) => {
+        if (!item) return;
+        if (siteSet.has(item.siteId)) hits.push({ kind: 'punchlist', id: item.id, why: 'punchlist item still points at the created site' });
+        if (machSet.has(item.equipmentId)) hits.push({ kind: 'punchlist', id: item.id, why: 'punchlist item still points at the created machine' });
+      });
+      return hits;
+    }
+    function editorUnexpectedCreatedPointers(entry) {
+      const after = entry && entry.after;
+      const expected = {
+        job: new Set((after && after.jobs || []).map(r => r && r.id)),
+        inspection: new Set((after && after.inspections || []).map(r => r && r.id)),
+        parts: new Set((after && after.partsRequests || []).map(r => r && r.id)),
+        site: new Set((after && after.sites || []).map(r => r && r.id)),
+        machine: new Set((after && after.machines || []).map(r => r && r.id)),
+        punchlist: new Set((after && after.punchlistItems || []).map(r => r && r.id))
+      };
+      return editorPointersToCreated(entry && entry.created).filter((h) => {
+        const set = expected[h.kind];
+        return !set || !set.has(h.id);
+      });
+    }
+    async function editorCommit(kind, summary, spec, mutateFn) {
+      spec = spec || {};
+      const idsBefore = editorIdIndex();
+      const before = editorSnapshotRecords(spec);
+      let threw = null;
+      try {
+        await mutateFn();
+      } catch (e) {
+        threw = e;
+      }
+      if (threw) {
+        try { await editorRestoreSnapshot(before); } catch (e2) {}
+        try { editorDeleteCreated(editorCreatedSince(idsBefore)); } catch (e3) {}
+        toast('Change failed — nothing was kept');
+        throw threw;
+      }
+      const created = editorCreatedSince(idsBefore);
+      const specAfter = {
+        machines: Array.from(new Set([].concat(spec.machines || [], created.machines || []))),
+        jobs: (spec.jobs || []).slice(),
+        inspections: (spec.inspections || []).slice(),
+        sites: Array.from(new Set([].concat(spec.sites || [], created.sites || []))),
+        customers: Array.from(new Set([].concat(spec.customers || [], created.customers || []))),
+        partsRequests: (spec.partsRequests || []).slice(),
+        punchlistItems: (spec.punchlistItems || []).slice()
+      };
+      const after = editorSnapshotRecords(specAfter);
+      const entry = {
+        id: newEntityId('ed'),
+        at: new Date().toISOString(),
+        kind,
+        summary,
+        before,
+        after,
+        created,
+        affectedIds: specAfter,
+        undone: false
+      };
+      let entryBytes = 0;
+      try { entryBytes = editorStableJson(entry).length; } catch (e) {}
+      if (entryBytes > 2 * 1024 * 1024) {
+        toast('This change would store more than 2 MB in the edit log');
+      }
+      const log = editorLogLoad();
+      log.unshift(entry);
+      while (log.length > 50) log.pop();
+      editorLogSave(log);
+      return entry;
+    }
+
+    function editorPreviewHtml(lines, warn) {
+      let html = '';
+      (lines || []).forEach((ln) => {
+        html += '<div class="ed-preview-block">' + editorEsc(ln.text || ln);
+        if (ln.count) html += '<div class="ed-preview-count">' + editorEsc(ln.count) + '</div>';
+        html += '</div>';
+      });
+      if (warn) html += '<div class="ed-warn">' + editorEsc(warn) + '</div>';
+      return html;
+    }
+    function editorEsc(s) {
+      return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function editorOpenSheet(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.hidden = false;
+      el.classList.add('show');
+      el.setAttribute('aria-hidden', 'false');
+    }
+    function editorCloseSheet(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.hidden = true;
+      el.classList.remove('show');
+      el.setAttribute('aria-hidden', 'true');
+    }
+    function editorCloseAllSheets() {
+      ['edPinSheet','edPreviewSheet','edFormSheet','edBackupAskSheet'].forEach(editorCloseSheet);
+    }
+
+    function editorAskBackupThen(fn) {
+      if (editorSessionBackupAsked) { fn(); return; }
+      editorOpenSheet('edBackupAskSheet');
+      const now = document.getElementById('edBackupNow');
+      const skip = document.getElementById('edBackupSkip');
+      const finish = (doBackup) => {
+        editorCloseSheet('edBackupAskSheet');
+        editorSessionBackupAsked = true;
+        if (doBackup && typeof exportBackupZip === 'function') {
+          Promise.resolve(exportBackupZip()).then(() => fn()).catch(() => fn());
+        } else fn();
+      };
+      if (now) now.onclick = () => finish(true);
+      if (skip) skip.onclick = () => finish(false);
+    }
+
+    function editorConfirmPreview(title, html, onApply) {
+      const t = document.getElementById('edPreviewTitle');
+      const b = document.getElementById('edPreviewBody');
+      if (t) t.textContent = title || 'Confirm change';
+      if (b) b.innerHTML = html || '';
+      editorPendingApply = onApply;
+      editorOpenSheet('edPreviewSheet');
+    }
+
+    async function editorRunApply() {
+      const fn = editorPendingApply;
+      editorPendingApply = null;
+      editorCloseSheet('edPreviewSheet');
+      if (!fn) return;
+      editorAskBackupThen(async () => {
+        try {
+          await fn();
+          toast('Saved');
+          editorRender();
+        } catch (e) {
+          console.warn(e);
+          toast('Change failed — nothing was kept');
+        }
+      });
+    }
+
+    // ----- PIN -----
+    function editorPinDigits() {
+      return [0,1,2,3].map(i => (document.getElementById('edPin' + i) || {}).value || '').join('');
+    }
+    function editorClearPinInputs() {
+      [0,1,2,3].forEach(i => { const el = document.getElementById('edPin' + i); if (el) el.value = ''; });
+      const err = document.getElementById('edPinError');
+      if (err) { err.hidden = true; err.textContent = ''; }
+    }
+    function editorShowPin(mode) {
+      editorPinMode = mode;
+      editorClearPinInputs();
+      const title = document.getElementById('edPinTitle');
+      const forgot = document.getElementById('edPinForgot');
+      const note = document.getElementById('edPinNote');
+      if (mode === 'set') {
+        if (title) title.textContent = 'Set a 4-digit PIN';
+        if (forgot) forgot.hidden = true;
+      } else if (mode === 'confirm') {
+        if (title) title.textContent = 'Confirm PIN';
+        if (forgot) forgot.hidden = true;
+      } else if (mode === 'reset') {
+        if (title) title.textContent = 'Set a new PIN';
+        if (forgot) forgot.hidden = true;
+      } else {
+        if (title) title.textContent = 'Enter PIN';
+        if (forgot) forgot.hidden = false;
+      }
+      if (note) note.textContent = 'This PIN only stops accidental edits on this phone. It is not an account login.';
+      editorOpenSheet('edPinSheet');
+      setTimeout(() => { try { document.getElementById('edPin0').focus(); } catch (e) {} }, 50);
+    }
+    function editorBindPinInputs() {
+      [0,1,2,3].forEach((i) => {
+        const el = document.getElementById('edPin' + i);
+        if (!el || el.dataset.bound === '1') return;
+        el.dataset.bound = '1';
+        el.addEventListener('input', () => {
+          const v = String(el.value || '').replace(/\D/g, '').slice(0, 1);
+          el.value = v;
+          if (v && i < 3) {
+            const next = document.getElementById('edPin' + (i + 1));
+            if (next) next.focus();
+          }
+        });
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Backspace' && !el.value && i > 0) {
+            const prev = document.getElementById('edPin' + (i - 1));
+            if (prev) prev.focus();
+          }
+        });
+      });
+    }
+    function editorHandlePinOk() {
+      const digits = editorPinDigits();
+      const err = document.getElementById('edPinError');
+      const showErr = (m) => { if (err) { err.hidden = false; err.textContent = m; } };
+      if (!/^\d{4}$/.test(digits)) { showErr('Enter 4 digits'); return; }
+      const settings = editorSettingsLoad();
+      if (editorPinMode === 'set' || editorPinMode === 'reset') {
+        editorPinFirst = digits;
+        editorShowPin('confirm');
+        return;
+      }
+      if (editorPinMode === 'confirm') {
+        if (digits !== editorPinFirst) { showErr('PINs did not match'); return; }
+        editorSettingsSave({ pin: digits });
+        editorCloseSheet('edPinSheet');
+        editorEnter();
+        return;
+      }
+      if (settings.pin !== digits) { showErr('Wrong PIN'); return; }
+      editorCloseSheet('edPinSheet');
+      editorEnter();
+    }
+    function editorOpenFromSettings() {
+      const settings = editorSettingsLoad();
+      if (!settings.pin) editorShowPin('set');
+      else editorShowPin('enter');
+    }
+    function editorResetPin() {
+      editorCloseSheet('edPinSheet');
+      editorAskBackupThen(() => editorShowPin('reset'));
+    }
+
+    function editorEnter() {
+      editorView = { name: 'home' };
+      showScreen('screenEditor');
+      setHeader('Editor');
+      document.body.classList.add('on-editor');
+      editorRender();
+    }
+    function editorLeave() {
+      editorCloseAllSheets();
+      document.body.classList.remove('on-editor');
+      showScreen('screenSettings');
+      setHeader('Settings');
+    }
+
+    // ----- Needs Attention -----
+    function editorNeedsAttention() {
+      const groups = {
+        jobType: [],
+        noType: [],
+        noSo: [],
+        dupes: [],
+        lineSites: [],
+        orphans: [],
+        missingEquip: [],
+        typeConflict: [],
+        firstSeen: [],
+        oldLine: []
+      };
+      const machines = loadMachines() || [];
+      const sites = loadSites() || [];
+      const inspections = loadInspections() || [];
+      const machineById = {};
+      machines.forEach(m => { if (m && m.id) machineById[m.id] = m; });
+      machines.forEach((m) => {
+        if (!m) return;
+        if (!m.machineType) groups.noType.push(m);
+        else if (m.machineTypeSource === 'job') groups.jobType.push(m);
+        if (!m.salesOrder) groups.noSo.push(m);
+        if ((m.moveLog || []).some(e => e && !e.type && !e.fromSiteId)) groups.firstSeen.push(m);
+      });
+      const byFuzzy = {};
+      machines.forEach((m) => {
+        const k = fuzzySerialKey(m && m.serialNumber);
+        if (!k) return;
+        if (!byFuzzy[k]) byFuzzy[k] = [];
+        byFuzzy[k].push(m);
+      });
+      Object.keys(byFuzzy).forEach((k) => {
+        if (byFuzzy[k].length > 1) groups.dupes.push(byFuzzy[k]);
+      });
+      sites.forEach((s) => {
+        if (s && siteNameContainsLine(s.name)) groups.lineSites.push(s);
+      });
+      const markOrphan = (rec, label, extra) => {
+        if (!rec) return;
+        if (rec.equipmentId && !machineById[rec.equipmentId]) groups.orphans.push(Object.assign({ label, rec }, extra || {}));
+        if (rec.serial && String(rec.serial).trim() && String(rec.serial).toUpperCase() !== 'TBD' && !rec.equipmentId) {
+          groups.missingEquip.push(Object.assign({ label, rec }, extra || {}));
+        }
+      };
+      (loadJobs() || []).forEach(() => {});
+      inspections.forEach((i) => {
+        markOrphan(i, 'Inspection');
+        if (i && i.equipmentId && i.model && machineById[i.equipmentId]) {
+          const m = machineById[i.equipmentId];
+          if (isConfirmedTypeSource(m.machineTypeSource) && m.machineType &&
+              normalizeTypeKey(m.machineType) !== normalizeTypeKey(i.model)) {
+            groups.typeConflict.push({ inspection: i, machine: m });
+          }
+        }
+      });
+      (loadPartsRequests() || []).forEach((req) => {
+        markOrphan(req, 'Parts request');
+        (req.parts || []).forEach((line) => markOrphan(line, 'Parts line', { parent: req.id }));
+      });
+      const oldByList = {};
+      editorWalkPunchlist((_pl, key, item) => {
+        markOrphan(item, 'Punchlist item', { listKey: key });
+        if (item && oldPunchlistSlotText(item.line) && !String(item.serial || '').trim()) {
+          if (!oldByList[key]) oldByList[key] = [];
+          oldByList[key].push(item);
+        }
+      });
+      Object.keys(oldByList).forEach((key) => groups.oldLine.push({ listKey: key, items: oldByList[key] }));
+      const total =
+        groups.jobType.length + groups.noType.length + groups.noSo.length + groups.dupes.length + groups.lineSites.length +
+        groups.orphans.length + groups.missingEquip.length + groups.typeConflict.length +
+        groups.firstSeen.length + groups.oldLine.length;
+      return { groups, total };
+    }
+
+    // ----- Render -----
+    function editorRender() {
+      const body = document.getElementById('edBody');
+      const title = document.getElementById('edTitle');
+      const kicker = document.getElementById('edKicker');
+      if (!body) return;
+      const view = editorView.name;
+      if (title) {
+        title.textContent = view === 'home' ? 'Local Data Editor'
+          : view === 'machines' ? 'Machines'
+          : view === 'machine' ? 'Machine'
+          : view === 'sites' ? 'Sites'
+          : view === 'site' ? 'Site'
+          : view === 'customers' ? 'Customers'
+          : view === 'customer' ? 'Customer'
+          : view === 'needs' ? 'Needs Attention'
+          : view === 'log' ? 'Edit log'
+          : 'Editor';
+      }
+      if (kicker) kicker.textContent = 'Manager';
+      if (view === 'home') body.innerHTML = editorHomeHtml();
+      else if (view === 'machines') body.innerHTML = editorMachinesHtml();
+      else if (view === 'machine') body.innerHTML = editorMachineHtml();
+      else if (view === 'sites') body.innerHTML = editorSitesHtml();
+      else if (view === 'site') body.innerHTML = editorSiteHtml();
+      else if (view === 'customers') body.innerHTML = editorCustomersHtml();
+      else if (view === 'customer') body.innerHTML = editorCustomerHtml();
+      else if (view === 'needs') body.innerHTML = editorNeedsHtml();
+      else if (view === 'log') body.innerHTML = editorLogHtml();
+      else body.innerHTML = '';
+      editorBindView();
+    }
+    function editorHomeHtml() {
+      const att = editorNeedsAttention();
+      const nM = (loadMachines() || []).length;
+      const nS = (loadSites() || []).length;
+      const nC = (loadCustomers() || []).length;
+      return `
+        <div class="ed-card" data-ed-go="needs">
+          <div class="ed-card-kicker">Review</div>
+          <div class="ed-card-title">Needs Attention${att.total ? '<span class="ed-badge">' + att.total + '</span>' : ''}</div>
+          <div class="ed-card-sub">${att.total ? att.total + ' item' + (att.total === 1 ? '' : 's') + ' to look at' : 'Nothing flagged'}</div>
+        </div>
+        <div class="ed-card" data-ed-go="machines">
+          <div class="ed-card-kicker">Identity</div>
+          <div class="ed-card-title">Machines</div>
+          <div class="ed-card-sub">${nM} serial${nM === 1 ? '' : 's'}</div>
+        </div>
+        <div class="ed-card" data-ed-go="sites">
+          <div class="ed-card-title">Sites</div>
+          <div class="ed-card-sub">${nS} site${nS === 1 ? '' : 's'}</div>
+        </div>
+        <div class="ed-card" data-ed-go="customers">
+          <div class="ed-card-title">Customers</div>
+          <div class="ed-card-sub">${nC} customer${nC === 1 ? '' : 's'}</div>
+        </div>
+        <div class="ed-card" data-ed-go="log">
+          <div class="ed-card-kicker">History</div>
+          <div class="ed-card-title">Edit log / Undo</div>
+          <div class="ed-card-sub">${editorLogLoad().length} change${editorLogLoad().length === 1 ? '' : 's'} on this phone</div>
+        </div>
+        <div class="ed-actions">
+          <button type="button" class="btn btn-outline" id="edCloseBtn">Close</button>
+        </div>`;
+    }
+    function editorMachinesHtml() {
+      const q = String(editorView.q || '').trim().toLowerCase();
+      const machines = (loadMachines() || []).slice().sort((a, b) => String(a.serialNumber || '').localeCompare(String(b.serialNumber || '')));
+      const rows = machines.filter((m) => {
+        if (!q) return true;
+        const hay = [m.serialNumber, m.machineType, m.lineLabel, m.productionLine, m.salesOrder,
+          editorSiteName(m.currentSiteId), editorCustomerName(m.currentCustomerId)].join(' ').toLowerCase();
+        return hay.indexOf(q) >= 0;
+      });
+      let html = '<div class="ed-search"><input id="edSearch" placeholder="Search machines" value="' + editorEsc(editorView.q || '') + '" /></div>';
+      if (!rows.length) html += '<div class="ed-empty">No machines</div>';
+      rows.forEach((m) => {
+        const line = [m.lineLabel, m.serialNumber, m.machineType].filter(Boolean).join(' · ');
+        const sub = [editorCustomerName(m.currentCustomerId), editorSiteName(m.currentSiteId), m.salesOrder].filter(Boolean).join(' · ');
+        html += '<div class="ed-row" data-ed-machine="' + editorEsc(m.id) + '"><div class="ed-row-title">' + editorEsc(line || m.id) + '</div><div class="ed-row-sub">' + editorEsc(sub || 'No site yet') + '</div></div>';
+      });
+      html += '<div class="ed-actions"><button type="button" class="btn-link" id="edMergeMachinesBtn">Merge two machines</button></div>';
+      return html;
+    }
+    function editorMachineHtml() {
+      const m = (loadMachines() || []).find(x => x && x.id === editorView.id);
+      if (!m) return '<div class="ed-empty">Machine not found</div>';
+      const uses = editorCountUses(m.id, m.serialNumber);
+      const field = (key, label, value, action) =>
+        '<div class="ed-field" data-ed-mfield="' + action + '"><div class="ed-field-label">' + editorEsc(label) + '</div><div class="ed-field-value' + (value ? '' : ' muted') + '">' + editorEsc(value || 'Not set') + '</div></div>';
+      let html = '';
+      html += field('serial', 'Serial', m.serialNumber, 'serial');
+      html += field('type', 'Type', (m.machineType || '') + (m.machineTypeSource ? ' · ' + m.machineTypeSource : ''), 'type');
+      html += field('so', 'Sales order', m.salesOrder, 'so');
+      html += field('prod', 'Production line', m.productionLine, 'prod');
+      html += field('line', 'Machine line label', m.lineLabel, 'line');
+      html += field('site', 'Current site', [editorCustomerName(m.currentCustomerId), editorSiteName(m.currentSiteId)].filter(Boolean).join(' · '), 'site');
+      html += '<div class="ed-group-label">Used by</div>';
+      html += '<div class="ed-field static"><div class="ed-field-value">' +
+        uses.jobs + ' jobs · ' + uses.inspections + ' inspections · ' + uses.punchlistItems + ' punchlist items · ' +
+        uses.partsLines + ' parts lines</div></div>';
+      if (uses.records.length) {
+        uses.records.slice(0, 30).forEach((r) => {
+          html += '<div class="ed-row static"><div class="ed-row-title">' + editorEsc(r.title || r.kind) + '</div><div class="ed-row-sub">' + editorEsc(r.kind) + '</div></div>';
+        });
+      }
+      html += '<div class="ed-group-label">Move log</div>';
+      const log = Array.isArray(m.moveLog) ? m.moveLog : [];
+      if (!log.length) html += '<div class="ed-empty">No moves yet</div>';
+      log.forEach((e) => {
+        const first = e && (e.type === 'placed' || !e.fromSiteId);
+        const when = e && e.at ? String(e.at).slice(0, 10) : '';
+        const text = first
+          ? ('First seen at ' + (editorSiteName(e.toSiteId) || e.toSiteId || 'site'))
+          : ((editorSiteName(e.fromSiteId) || '—') + ' → ' + (editorSiteName(e.toSiteId) || '—'));
+        html += '<div class="ed-row static"><div class="ed-row-title">' + editorEsc(text) + '</div><div class="ed-row-sub">' + editorEsc(when) + '</div></div>';
+      });
+      if (log.some(e => e && !e.type && !e.fromSiteId)) {
+        html += '<div class="ed-actions"><button type="button" class="btn btn-outline" id="edTidyMoves">Tidy first-seen entries</button></div>';
+      }
+      html += '<div class="ed-actions"><button type="button" class="btn-link" id="edMergeThis">Merge this machine into another</button></div>';
+      return html;
+    }
+    function editorSitesHtml() {
+      const q = String(editorView.q || '').trim().toLowerCase();
+      const customers = loadCustomers() || [];
+      const sites = loadSites() || [];
+      let html = '<div class="ed-search"><input id="edSearch" placeholder="Search sites" value="' + editorEsc(editorView.q || '') + '" /></div>';
+      customers.forEach((c) => {
+        const mine = sites.filter(s => s && s.customerId === c.id).filter((s) => {
+          if (!q) return true;
+          return ((s.name || '') + ' ' + (c.name || '')).toLowerCase().indexOf(q) >= 0;
+        });
+        if (!mine.length && q) return;
+        html += '<div class="ed-group-label">' + editorEsc(c.name || 'Customer') + '</div>';
+        if (!mine.length) html += '<div class="ed-empty">No sites</div>';
+        mine.forEach((s) => {
+          html += '<div class="ed-row" data-ed-site="' + editorEsc(s.id) + '"><div class="ed-row-title">' + editorEsc(s.name || 'Untitled site') + '</div></div>';
+        });
+      });
+      return html;
+    }
+    function editorSiteHtml() {
+      const s = (loadSites() || []).find(x => x && x.id === editorView.id);
+      if (!s) return '<div class="ed-empty">Site not found</div>';
+      const cname = editorCustomerName(s.customerId);
+      const nMach = (loadMachines() || []).filter(m => m && m.currentSiteId === s.id).length;
+      const nJobs = (loadJobs() || []).filter(j => j && j.siteId === s.id).length;
+      return `
+        <div class="ed-field static"><div class="ed-field-label">Customer</div><div class="ed-field-value">${editorEsc(cname)}</div></div>
+        <div class="ed-field static"><div class="ed-field-label">Site</div><div class="ed-field-value">${editorEsc(s.name)}</div></div>
+        <div class="ed-field static"><div class="ed-field-sub"></div><div class="ed-card-sub" style="margin-top:6px;">${nJobs} job${nJobs===1?'':'s'} · ${nMach} machine${nMach===1?'':'s'}</div></div>
+        <div class="ed-actions">
+          <button type="button" class="btn btn-primary" id="edRenameSite">Rename site</button>
+          <button type="button" class="btn btn-outline" id="edMergeSite">Merge this site into…</button>
+        </div>`;
+    }
+    function editorCustomersHtml() {
+      const q = String(editorView.q || '').trim().toLowerCase();
+      const customers = (loadCustomers() || []).filter(c => !q || String(c.name || '').toLowerCase().indexOf(q) >= 0);
+      let html = '<div class="ed-search"><input id="edSearch" placeholder="Search customers" value="' + editorEsc(editorView.q || '') + '" /></div>';
+      if (!customers.length) html += '<div class="ed-empty">No customers</div>';
+      customers.forEach((c) => {
+        const n = (loadSites() || []).filter(s => s && s.customerId === c.id).length;
+        html += '<div class="ed-row" data-ed-customer="' + editorEsc(c.id) + '"><div class="ed-row-title">' + editorEsc(c.name || 'Untitled') + '</div><div class="ed-row-sub">' + n + ' site' + (n===1?'':'s') + '</div></div>';
+      });
+      return html;
+    }
+    function editorCustomerHtml() {
+      const c = (loadCustomers() || []).find(x => x && x.id === editorView.id);
+      if (!c) return '<div class="ed-empty">Customer not found</div>';
+      return `
+        <div class="ed-field static"><div class="ed-field-value">${editorEsc(c.name)}</div></div>
+        <div class="ed-actions">
+          <button type="button" class="btn btn-primary" id="edRenameCustomer">Rename customer</button>
+          <button type="button" class="btn btn-outline" id="edMergeCustomer">Merge this customer into…</button>
+        </div>`;
+    }
+    function editorNeedsHtml() {
+      const { groups } = editorNeedsAttention();
+      let html = '';
+      const block = (title, count, inner) => {
+        if (!count) return;
+        html += '<div class="ed-collapsed-head" data-ed-toggle="' + editorEsc(title) + '"><div class="ed-row-title">' + editorEsc(title) + '</div><span class="ed-badge">' + count + '</span></div>';
+        html += '<div class="ed-needs-group' + (title === 'Type only from a job' && !editorNeedsTypeOpen ? ' hidden' : '') + '" data-ed-group="' + editorEsc(title) + '">' + inner + '</div>';
+      };
+      let inner = '';
+      groups.jobType.forEach((m) => {
+        inner += '<div class="ed-row"><div class="ed-row-title">' + editorEsc(m.serialNumber) + ' · ' + editorEsc(m.machineType) + '</div>' +
+          '<div class="ed-row-sub"><button type="button" class="btn-link ed-confirm-type" data-id="' + editorEsc(m.id) + '">Confirm type</button> · <button type="button" class="btn-link" data-ed-machine="' + editorEsc(m.id) + '">Open</button></div></div>';
+      });
+      block('Type only from a job', groups.jobType.length, inner || '');
+      inner = '';
+      groups.noType.forEach((m) => {
+        inner += '<div class="ed-row"><div class="ed-row-title">' + editorEsc(m.serialNumber || m.id) + '</div>' +
+          '<div class="ed-row-sub"><button type="button" class="btn-link ed-set-type" data-id="' + editorEsc(m.id) + '">Set type</button></div></div>';
+      });
+      block('No type yet', groups.noType.length, inner);
+      inner = '';
+      groups.noSo.forEach((m) => {
+        inner += '<div class="ed-row" data-ed-machine="' + editorEsc(m.id) + '"><div class="ed-row-title">' + editorEsc(m.serialNumber) + '</div><div class="ed-row-sub">No sales order</div></div>';
+      });
+      block('No sales order', groups.noSo.length, inner);
+      inner = '';
+      groups.dupes.forEach((arr) => {
+        inner += '<div class="ed-row ed-dupe" data-ids="' + editorEsc(arr.map(m => m.id).join(',')) + '"><div class="ed-row-title">' + editorEsc(arr.map(m => m.serialNumber).join(' / ')) + '</div><div class="ed-row-sub">Likely the same machine</div></div>';
+      });
+      block('Likely duplicate machines', groups.dupes.length, inner);
+      inner = '';
+      groups.lineSites.forEach((s) => {
+        inner += '<div class="ed-row" data-ed-site="' + editorEsc(s.id) + '"><div class="ed-row-title">' + editorEsc(s.name) + '</div><div class="ed-row-sub">' + editorEsc(editorCustomerName(s.customerId)) + '</div></div>';
+      });
+      block('Site name contains “line”', groups.lineSites.length, inner);
+      inner = '';
+      groups.orphans.forEach((o, i) => {
+        inner += '<div class="ed-row ed-orphan" data-i="' + i + '"><div class="ed-row-title">' + editorEsc(o.label) + '</div><div class="ed-row-sub">Points at a machine that is not here</div></div>';
+      });
+      editorView._orphans = groups.orphans;
+      block('Orphan equipment id', groups.orphans.length, inner);
+      inner = '';
+      groups.missingEquip.forEach((o) => {
+        inner += '<div class="ed-row ed-attach" data-serial="' + editorEsc(o.rec.serial || '') + '" data-kind="' + editorEsc(o.label) + '" data-id="' + editorEsc(o.rec.id || '') + '" data-list="' + editorEsc(o.listKey || '') + '"><div class="ed-row-title">' + editorEsc(o.label) + ' · ' + editorEsc(o.rec.serial || '') + '</div><div class="ed-row-sub">Has a serial, no machine id</div></div>';
+      });
+      block('Serial but no equipment id', groups.missingEquip.length, inner);
+      inner = '';
+      groups.typeConflict.forEach((o) => {
+        inner += '<div class="ed-row" data-ed-machine="' + editorEsc(o.machine.id) + '"><div class="ed-row-title">' + editorEsc(o.machine.serialNumber) + '</div><div class="ed-row-sub">Machine ' + editorEsc(o.machine.machineType) + ' · inspection ' + editorEsc(o.inspection.model) + '</div></div>';
+      });
+      block('Inspection vs machine type', groups.typeConflict.length, inner);
+      inner = '';
+      groups.firstSeen.forEach((m) => {
+        inner += '<div class="ed-row"><div class="ed-row-title">' + editorEsc(m.serialNumber) + '</div><div class="ed-row-sub"><button type="button" class="btn-link ed-tidy-one" data-id="' + editorEsc(m.id) + '">Tidy</button></div></div>';
+      });
+      block('First-seen log entries', groups.firstSeen.length, inner);
+      inner = '';
+      groups.oldLine.forEach((g) => {
+        inner += '<div class="ed-row ed-oldline" data-key="' + editorEsc(g.listKey) + '"><div class="ed-row-title">' + editorEsc(g.listKey) + '</div><div class="ed-row-sub">' + g.items.length + ' item' + (g.items.length===1?'':'s') + ' with old line text</div></div>';
+      });
+      block('Old punchlist line text', groups.oldLine.length, inner);
+      if (!html) html = '<div class="ed-empty">Nothing flagged</div>';
+      return html;
+    }
+    function editorLogHtml() {
+      const log = editorLogLoad();
+      const bytes = editorLogBytes(log);
+      let html = '<div class="ed-log-size">Log size ' + (Math.round(bytes / 102.4) / 10) + ' KB</div>';
+      if (!log.length) html += '<div class="ed-empty">No editor changes yet</div>';
+      const firstUndoable = log.findIndex(e => e && !e.undone);
+      log.forEach((e, i) => {
+        const when = e.at ? String(e.at).replace('T', ' ').slice(0, 16) : '';
+        const can = i === firstUndoable;
+        html += '<div class="ed-row"><div class="ed-row-title">' + editorEsc(e.summary || e.kind) + '</div>' +
+          '<div class="ed-row-sub">' + editorEsc(when) + (e.undone ? ' · undone' : '') +
+          (can ? ' · <button type="button" class="btn-link ed-undo" data-id="' + editorEsc(e.id) + '">Undo this</button>' : '') +
+          '</div></div>';
+      });
+      return html;
+    }
+
+    function editorBindView() {
+      const body = document.getElementById('edBody');
+      if (!body) return;
+      body.querySelectorAll('[data-ed-go]').forEach((el) => {
+        el.addEventListener('click', () => { editorView = { name: el.getAttribute('data-ed-go') }; editorRender(); });
+      });
+      const closeBtn = document.getElementById('edCloseBtn');
+      if (closeBtn) closeBtn.onclick = editorLeave;
+      const search = document.getElementById('edSearch');
+      if (search) {
+        search.addEventListener('input', () => {
+          editorView.q = search.value;
+          const pos = search.selectionStart;
+          editorRender();
+          const again = document.getElementById('edSearch');
+          if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) {} }
+        });
+      }
+      body.querySelectorAll('[data-ed-machine]').forEach((el) => {
+        el.addEventListener('click', (e) => {
+          if (e.target && e.target.closest && e.target.closest('.btn-link')) return;
+          editorView = { name: 'machine', id: el.getAttribute('data-ed-machine') };
+          editorRender();
+        });
+      });
+      body.querySelectorAll('[data-ed-site]').forEach((el) => {
+        el.addEventListener('click', () => { editorView = { name: 'site', id: el.getAttribute('data-ed-site') }; editorRender(); });
+      });
+      body.querySelectorAll('[data-ed-customer]').forEach((el) => {
+        el.addEventListener('click', () => { editorView = { name: 'customer', id: el.getAttribute('data-ed-customer') }; editorRender(); });
+      });
+      body.querySelectorAll('[data-ed-mfield]').forEach((el) => {
+        el.addEventListener('click', () => editorStartMachineField(el.getAttribute('data-ed-mfield')));
+      });
+      const tidy = document.getElementById('edTidyMoves');
+      if (tidy) tidy.onclick = () => editorTidyMoves(editorView.id);
+      const mergeThis = document.getElementById('edMergeThis');
+      if (mergeThis) mergeThis.onclick = () => editorStartMachineMerge(editorView.id, null);
+      const mergeTwo = document.getElementById('edMergeMachinesBtn');
+      if (mergeTwo) mergeTwo.onclick = () => editorStartMachineMerge(null, null);
+      const renameSite = document.getElementById('edRenameSite');
+      if (renameSite) renameSite.onclick = () => editorStartSiteRename(editorView.id);
+      const mergeSite = document.getElementById('edMergeSite');
+      if (mergeSite) mergeSite.onclick = () => editorStartSiteMerge(editorView.id);
+      const renameCust = document.getElementById('edRenameCustomer');
+      if (renameCust) renameCust.onclick = () => editorStartCustomerRename(editorView.id);
+      const mergeCust = document.getElementById('edMergeCustomer');
+      if (mergeCust) mergeCust.onclick = () => editorStartCustomerMerge(editorView.id);
+      body.querySelectorAll('.ed-confirm-type').forEach((btn) => {
+        btn.addEventListener('click', (e) => { e.stopPropagation(); editorConfirmJobType(btn.getAttribute('data-id')); });
+      });
+      body.querySelectorAll('.ed-set-type').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const m = (loadMachines() || []).find(x => x && x.id === btn.getAttribute('data-id'));
+          if (!m) return;
+          if (typeof openTypePicker === 'function') {
+            openTypePicker({
+              title: 'Machine type',
+              current: m.machineType || '',
+              restrictToChecklist: false,
+              onSelect: (t) => editorApplyMachineType(m.id, t)
+            });
+          }
+        });
+      });
+      body.querySelectorAll('.ed-tidy-one').forEach((btn) => {
+        btn.addEventListener('click', (e) => { e.stopPropagation(); editorTidyMoves(btn.getAttribute('data-id')); });
+      });
+      body.querySelectorAll('.ed-dupe').forEach((el) => {
+        el.addEventListener('click', () => {
+          const ids = String(el.getAttribute('data-ids') || '').split(',');
+          editorStartMachineMerge(ids[0], ids[1]);
+        });
+      });
+      body.querySelectorAll('.ed-oldline').forEach((el) => {
+        el.addEventListener('click', () => editorMoveOldLineText(el.getAttribute('data-key')));
+      });
+      body.querySelectorAll('.ed-attach').forEach((el) => {
+        el.addEventListener('click', () => editorAttachSerial(el.getAttribute('data-serial')));
+      });
+      body.querySelectorAll('[data-ed-toggle]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const name = el.getAttribute('data-ed-toggle');
+          if (name === 'Type only from a job') editorNeedsTypeOpen = !editorNeedsTypeOpen;
+          const grp = body.querySelector('[data-ed-group="' + name + '"]');
+          if (grp) grp.classList.toggle('hidden');
+        });
+      });
+      body.querySelectorAll('.ed-undo').forEach((btn) => {
+        btn.addEventListener('click', () => editorUndo(btn.getAttribute('data-id')));
+      });
+    }
+
+    function editorOpenForm(title, fieldsHtml, onSave) {
+      const t = document.getElementById('edFormTitle');
+      const b = document.getElementById('edFormBody');
+      if (t) t.textContent = title;
+      if (b) b.innerHTML = fieldsHtml;
+      editorOpenSheet('edFormSheet');
+      const save = document.getElementById('edFormSave');
+      if (save) save.onclick = () => { const keep = onSave(); if (keep !== false) editorCloseSheet('edFormSheet'); };
+    }
+
+    function editorStartMachineField(field) {
+      const m = (loadMachines() || []).find(x => x && x.id === editorView.id);
+      if (!m) return;
+      if (field === 'type') {
+        if (typeof openTypePicker === 'function') {
+          openTypePicker({
+            title: 'Machine type',
+            current: m.machineType || '',
+            restrictToChecklist: false,
+            onSelect: (t) => editorApplyMachineType(m.id, t)
+          });
+        }
+        return;
+      }
+      if (field === 'serial') {
+        editorOpenForm('Correct serial',
+          '<div class="form-group"><label>New serial</label><input type="text" id="edFieldInput" value="' + editorEsc(m.serialNumber || '') + '" /></div>',
+          () => { editorApplySerialCorrection(m.id, (document.getElementById('edFieldInput') || {}).value); });
+        return;
+      }
+      if (field === 'so' || field === 'prod' || field === 'line') {
+        const label = field === 'so' ? 'Sales order' : field === 'prod' ? 'Production line' : 'Machine line label';
+        const cur = field === 'so' ? m.salesOrder : field === 'prod' ? m.productionLine : m.lineLabel;
+        editorOpenForm(label,
+          '<div class="form-group"><label>' + label + '</label><input type="text" id="edFieldInput" value="' + editorEsc(cur || '') + '" /></div>',
+          () => { editorApplyMachineText(m.id, field, (document.getElementById('edFieldInput') || {}).value); });
+        return;
+      }
+      if (field === 'site') editorStartMachineSite(m.id);
+    }
+
+    function editorApplyMachineType(machineId, type) {
+      const m = (loadMachines() || []).find(x => x && x.id === machineId);
+      if (!m) return;
+      const next = String(type || '').trim();
+      editorConfirmPreview('Set type', editorPreviewHtml([
+        { text: (m.serialNumber || '') + ': ' + (m.machineType || 'none') + ' → ' + next, count: 'Source becomes manager. Job form will lock this type.' }
+      ]), async () => {
+        await editorCommit('machine-type', 'Set type on ' + (m.serialNumber || '') + ' to ' + next, { machines: [machineId] }, () => {
+          applyMachineUpdate(machineId, { machineType: next, machineTypeSource: 'manager' }, { source: 'manager' });
+          // force manager even if applyMachineUpdate treated it as conflict
+          const all = loadMachines();
+          const rec = all.find(x => x && x.id === machineId);
+          if (rec) {
+            rec.machineType = next;
+            rec.machineTypeSource = 'manager';
+            rec.updatedAt = new Date().toISOString();
+            saveMachines(all);
+          }
+        });
+      });
+    }
+    function editorConfirmJobType(machineId) {
+      const m = (loadMachines() || []).find(x => x && x.id === machineId);
+      if (!m || !m.machineType) return;
+      editorApplyMachineType(machineId, m.machineType);
+    }
+    function editorApplyMachineText(machineId, field, value) {
+      const m = (loadMachines() || []).find(x => x && x.id === machineId);
+      if (!m) return;
+      const next = String(value || '').trim();
+      const label = field === 'so' ? 'sales order' : field === 'prod' ? 'production line' : 'line label';
+      editorConfirmPreview('Set ' + label, editorPreviewHtml([{ text: (m.serialNumber || '') + ': ' + label + ' → ' + (next || '(empty)') }]), async () => {
+        await editorCommit('machine-text', 'Set ' + label + ' on ' + (m.serialNumber || ''), { machines: [machineId] }, () => {
+          const all = loadMachines();
+          const rec = all.find(x => x && x.id === machineId);
+          if (!rec) return;
+          if (field === 'so') rec.salesOrder = next;
+          if (field === 'prod') rec.productionLine = next;
+          if (field === 'line') rec.lineLabel = next;
+          rec.updatedAt = new Date().toISOString();
+          saveMachines(all);
+        });
+      });
+    }
+    function editorStartMachineSite(machineId) {
+      const customers = loadCustomers() || [];
+      const sites = loadSites() || [];
+      let html = '<div class="form-group"><label>Customer</label><select id="edSiteCust">';
+      html += '<option value="">Select</option>';
+      customers.forEach(c => { html += '<option value="' + editorEsc(c.id) + '">' + editorEsc(c.name) + '</option>'; });
+      html += '</select></div><div class="form-group"><label>Site</label><select id="edSiteSite"></select></div>';
+      editorOpenForm('Move machine', html, () => {
+        const cid = (document.getElementById('edSiteCust') || {}).value;
+        const sid = (document.getElementById('edSiteSite') || {}).value;
+        if (!sid) { toast('Pick a site'); return false; }
+        editorApplyMachineMove(machineId, cid, sid);
+      });
+      const cust = document.getElementById('edSiteCust');
+      const fill = () => {
+        const sel = document.getElementById('edSiteSite');
+        if (!sel) return;
+        const cid = cust.value;
+        sel.innerHTML = sites.filter(s => s.customerId === cid).map(s => '<option value="' + editorEsc(s.id) + '">' + editorEsc(s.name) + '</option>').join('');
+      };
+      if (cust) cust.addEventListener('change', fill);
+    }
+    function editorApplyMachineMove(machineId, customerId, siteId) {
+      const m = (loadMachines() || []).find(x => x && x.id === machineId);
+      if (!m) return;
+      editorConfirmPreview('Move machine', editorPreviewHtml([
+        { text: (m.serialNumber || '') + ' moves to ' + editorSiteName(siteId), count: 'Line label and production line will be cleared.' }
+      ]), async () => {
+        await editorCommit('machine-move', 'Moved ' + (m.serialNumber || '') + ' to ' + editorSiteName(siteId), { machines: [machineId] }, () => {
+          applyMachineUpdate(machineId, { siteId: siteId, customerId: customerId }, { source: 'manager', asOf: new Date().toISOString() });
+        });
+      });
+    }
+
+    function editorApplySerialCorrection(machineId, newSerialRaw) {
+      const m = (loadMachines() || []).find(x => x && x.id === machineId);
+      if (!m) return;
+      const newSerial = String(newSerialRaw || '').trim();
+      if (!newSerial) { toast('Serial required'); return; }
+      if (normalizeMatchText(newSerial) === normalizeMatchText(m.serialNumber)) return;
+      const existing = findMachineBySerial(newSerial);
+      if (existing && existing.id !== m.id) {
+        editorStartMachineMerge(existing.id, m.id);
+        return;
+      }
+      const uses = editorCountUses(m.id, m.serialNumber);
+      const spec = {
+        machines: [machineId],
+        jobs: uses.records.filter(r => r.kind === 'job').map(r => r.id),
+        inspections: uses.records.filter(r => r.kind === 'inspection').map(r => r.id),
+        partsRequests: uses.records.filter(r => r.kind === 'parts' || r.kind === 'partsLine').map(r => r.parent || r.id),
+        punchlistItems: uses.records.filter(r => r.kind === 'punchlist').map(r => ({ listKey: r.listKey, id: r.id }))
+      };
+      editorConfirmPreview('Correct serial', editorPreviewHtml([
+        { text: (m.serialNumber || '') + ' → ' + newSerial,
+          count: uses.jobs + ' jobs, ' + uses.inspections + ' inspections, ' + uses.punchlistItems + ' punchlist items, ' + uses.partsLines + ' parts lines' }
+      ]), async () => {
+        const newId = machineIdForSerial(newSerial);
+        spec.machines = [machineId, newId];
+        await editorCommit('serial-correct', 'Corrected serial ' + m.serialNumber + ' → ' + newSerial, spec, async () => {
+          const all = loadMachines();
+          const rec = all.find(x => x && x.id === machineId);
+          const copy = Object.assign({}, rec, {
+            id: newId,
+            serialNumber: newSerial,
+            serialNumberNormalized: normalizeMatchText(newSerial),
+            updatedAt: new Date().toISOString()
+          });
+          all.push(copy);
+          saveMachines(all.filter(x => x && x.id !== machineId));
+          await editorRepointSerialAndId(machineId, newId, m.serialNumber, newSerial);
+        });
+        editorView = { name: 'machine', id: newId };
+      });
+    }
+
+    function editorStartMachineMerge(keepId, dropId) {
+      const machines = loadMachines() || [];
+      if (!keepId || !dropId) {
+        let html = '<div class="form-group"><label>Keep</label><select id="edKeep">';
+        machines.forEach(m => { html += '<option value="' + editorEsc(m.id) + '"' + (m.id === keepId ? ' selected' : '') + '>' + editorEsc(m.serialNumber) + '</option>'; });
+        html += '</select></div><div class="form-group"><label>Merge away</label><select id="edDrop">';
+        machines.forEach(m => { html += '<option value="' + editorEsc(m.id) + '"' + (m.id === dropId ? ' selected' : '') + '>' + editorEsc(m.serialNumber) + '</option>'; });
+        html += '</select></div>';
+        editorOpenForm('Merge machines', html, () => {
+          const a = (document.getElementById('edKeep') || {}).value;
+          const b = (document.getElementById('edDrop') || {}).value;
+          if (!a || !b || a === b) { toast('Pick two different machines'); return false; }
+          editorPreviewMachineMerge(a, b);
+        });
+        return;
+      }
+      editorPreviewMachineMerge(keepId, dropId);
+    }
+    function editorPreviewMachineMerge(keepId, dropId) {
+      const keep = (loadMachines() || []).find(x => x && x.id === keepId);
+      const drop = (loadMachines() || []).find(x => x && x.id === dropId);
+      if (!keep || !drop) return;
+      const keepConfirmed = isConfirmedTypeSource(keep.machineTypeSource) && keep.machineType;
+      const dropConfirmed = isConfirmedTypeSource(drop.machineTypeSource) && drop.machineType;
+      const typeClash = keepConfirmed && dropConfirmed && normalizeTypeKey(keep.machineType) !== normalizeTypeKey(drop.machineType);
+      const uses = editorCountUses(drop.id, drop.serialNumber);
+      let extra = '';
+      if (typeClash) {
+        extra = '<div class="form-group"><label>Type to keep</label><select id="edMergeType">' +
+          '<option value="' + editorEsc(keep.machineType) + '">' + editorEsc(keep.machineType + ' (kept machine)') + '</option>' +
+          '<option value="' + editorEsc(drop.machineType) + '">' + editorEsc(drop.machineType + ' (other machine)') + '</option>' +
+          '</select></div>';
+        const b = document.getElementById('edPreviewBody');
+        editorConfirmPreview('Merge machines', editorPreviewHtml([
+          { text: 'Keep ' + keep.serialNumber + ', drop ' + drop.serialNumber,
+            count: uses.jobs + ' jobs, ' + uses.inspections + ' inspections, ' + uses.punchlistItems + ' punchlist items' }
+        ], 'Both have a confirmed type. Choose which type to keep.') + extra, async () => {
+          const chosen = (document.getElementById('edMergeType') || {}).value || keep.machineType;
+          await editorDoMachineMerge(keep, drop, chosen);
+        });
+        return;
+      }
+      editorConfirmPreview('Merge machines', editorPreviewHtml([
+        { text: 'Keep ' + keep.serialNumber + ', drop ' + drop.serialNumber,
+          count: uses.jobs + ' jobs, ' + uses.inspections + ' inspections, ' + uses.punchlistItems + ' punchlist items, ' + uses.partsLines + ' parts lines' }
+      ]), async () => editorDoMachineMerge(keep, drop, keep.machineType || drop.machineType));
+    }
+    async function editorDoMachineMerge(keep, drop, chosenType) {
+      const uses = editorCountUses(drop.id, drop.serialNumber);
+      const spec = {
+        machines: [keep.id, drop.id],
+        jobs: uses.records.filter(r => r.kind === 'job').map(r => r.id),
+        inspections: uses.records.filter(r => r.kind === 'inspection').map(r => r.id),
+        partsRequests: uses.records.filter(r => r.kind === 'parts' || r.kind === 'partsLine').map(r => r.parent || r.id),
+        punchlistItems: uses.records.filter(r => r.kind === 'punchlist').map(r => ({ listKey: r.listKey, id: r.id }))
+      };
+      await editorCommit('machine-merge', 'Merged ' + drop.serialNumber + ' into ' + keep.serialNumber, spec, async () => {
+        const all = loadMachines();
+        const rec = all.find(x => x && x.id === keep.id);
+        const other = all.find(x => x && x.id === drop.id);
+        ['salesOrder','lineLabel','productionLine','currentSiteId','currentCustomerId','machineType'].forEach((k) => {
+          if (rec && other && !rec[k] && other[k]) rec[k] = other[k];
+        });
+        if (chosenType) {
+          rec.machineType = chosenType;
+          if (!isConfirmedTypeSource(rec.machineTypeSource)) rec.machineTypeSource = other.machineTypeSource || rec.machineTypeSource || 'manager';
+        }
+        rec.moveLog = (Array.isArray(rec.moveLog) ? rec.moveLog : []).concat(Array.isArray(other.moveLog) ? other.moveLog : [])
+          .slice().sort((a, b) => String(a && a.at || '').localeCompare(String(b && b.at || '')));
+        rec.updatedAt = new Date().toISOString();
+        saveMachines(all.filter(x => x && x.id !== drop.id));
+        await editorRepointSerialAndId(drop.id, keep.id, drop.serialNumber, keep.serialNumber);
+      });
+      editorView = { name: 'machine', id: keep.id };
+    }
+
+    function editorStartSiteRename(siteId) {
+      const s = (loadSites() || []).find(x => x && x.id === siteId);
+      if (!s) return;
+      const suggest = suggestProductionLineFromSiteName(s.name);
+      editorOpenForm('Rename site',
+        '<div class="form-group"><label>New name</label><input type="text" id="edFieldInput" value="' + editorEsc(s.name) + '" /></div>' +
+        '<div class="form-group"><label>Set production line on machines and jobs at this site</label>' +
+        '<input type="text" id="edProdInput" value="' + editorEsc(suggest) + '" placeholder="e.g. Line 9" /></div>',
+        () => {
+          const name = String((document.getElementById('edFieldInput') || {}).value || '').trim();
+          const prod = String((document.getElementById('edProdInput') || {}).value || '').trim();
+          if (!name) { toast('Name required'); return false; }
+          editorApplySiteRename(siteId, name, prod);
+        });
+    }
+    function editorApplySiteRename(siteId, newName, prodLine) {
+      const s = (loadSites() || []).find(x => x && x.id === siteId);
+      if (!s) return;
+      const touched = editorSiteIdsTouched(siteId);
+      const jobsAt = (loadJobs() || []).filter(j => j && j.siteId === siteId);
+      const warn = (!prodLine && siteNameContainsLine(s.name))
+        ? ('“' + s.name + '” will no longer appear on ' + jobsAt.length + ' job' + (jobsAt.length === 1 ? '' : 's') + '.')
+        : '';
+      editorConfirmPreview('Rename site', editorPreviewHtml([
+        { text: (s.name || '') + ' → ' + newName,
+          count: jobsAt.length + ' jobs, ' + touched.machines.length + ' machines' + (prodLine ? (', production line “' + prodLine + '”') : '') }
+      ], warn), async () => {
+        await editorCommit('site-rename', 'Renamed site ' + s.name + ' → ' + newName, Object.assign({ sites: [siteId] }, touched), () => {
+          const sites = loadSites();
+          const rec = sites.find(x => x && x.id === siteId);
+          if (rec) {
+            rec.name = newName;
+            rec.nameNormalized = normalizeMatchText(newName);
+            rec.updatedAt = new Date().toISOString();
+            saveSites(sites);
+          }
+          const jobs = loadJobs();
+          jobs.forEach((j) => {
+            if (!j || j.siteId !== siteId) return;
+            j.site = newName;
+            if (prodLine && !j.productionLine) j.productionLine = prodLine;
+          });
+          saveJobs(jobs);
+          const reqs = loadPartsRequests();
+          reqs.forEach((r) => { if (r && r.siteId === siteId) r.site = newName; });
+          savePartsRequests(reqs);
+          if (prodLine) {
+            const machines = loadMachines();
+            machines.forEach((m) => {
+              if (m && m.currentSiteId === siteId && !m.productionLine) m.productionLine = prodLine;
+            });
+            saveMachines(machines);
+          }
+        });
+        editorView = { name: 'site', id: siteId };
+      });
+    }
+
+    function editorStartSiteMerge(fromId) {
+      const from = (loadSites() || []).find(x => x && x.id === fromId);
+      if (!from) return;
+      const others = (loadSites() || []).filter(s => s && s.customerId === from.customerId && s.id !== fromId);
+      const suggest = suggestProductionLineFromSiteName(from.name);
+      let html = '<div class="form-group"><label>Merge into</label><select id="edTarget">';
+      html += '<option value="__new__">+ New site name…</option>';
+      others.forEach(s => { html += '<option value="' + editorEsc(s.id) + '">' + editorEsc(s.name) + '</option>'; });
+      html += '</select></div>';
+      html += '<div class="form-group" id="edNewSiteWrap"><label>New site name</label><input type="text" id="edNewSiteName" placeholder="e.g. Bolingbrook" /></div>';
+      html += '<div class="form-group"><label>Set production line on the machines at “' + editorEsc(from.name) + '”</label>' +
+        '<input type="text" id="edProdInput" value="' + editorEsc(suggest) + '" /></div>';
+      editorOpenForm('Merge site', html, () => {
+        const target = (document.getElementById('edTarget') || {}).value;
+        const newName = String((document.getElementById('edNewSiteName') || {}).value || '').trim();
+        const prod = String((document.getElementById('edProdInput') || {}).value || '').trim();
+        if (target === '__new__') {
+          if (!newName) { toast('Enter a new site name'); return false; }
+          editorApplySiteMerge(fromId, null, newName, prod);
+        } else {
+          editorApplySiteMerge(fromId, target, '', prod);
+        }
+      });
+      const sel = document.getElementById('edTarget');
+      const wrap = document.getElementById('edNewSiteWrap');
+      const sync = () => { if (wrap) wrap.style.display = (sel && sel.value === '__new__') ? '' : 'none'; };
+      if (sel) sel.addEventListener('change', sync);
+      sync();
+    }
+    function editorApplySiteMerge(fromId, toId, newName, prodLine) {
+      const from = (loadSites() || []).find(x => x && x.id === fromId);
+      if (!from) return;
+      const jobsAt = (loadJobs() || []).filter(j => j && j.siteId === fromId);
+      const warn = (!prodLine && siteNameContainsLine(from.name))
+        ? ('“' + from.name + '” will no longer appear on ' + jobsAt.length + ' job' + (jobsAt.length === 1 ? '' : 's') + '.')
+        : '';
+      const touched = editorSiteIdsTouched(fromId);
+      editorConfirmPreview('Merge site', editorPreviewHtml([
+        { text: 'Merge “' + from.name + '” into “' + (newName || editorSiteName(toId)) + '”',
+          count: jobsAt.length + ' jobs, ' + touched.machines.length + ' machines' + (prodLine ? (', production line “' + prodLine + '”') : '') }
+      ], warn), async () => {
+        let destId = toId;
+        const destNameGuess = newName || editorSiteName(toId);
+        touched.sites = [fromId].concat(toId ? [toId] : []);
+        await editorCommit('site-merge', 'Merged site ' + from.name + ' into ' + destNameGuess, touched, async () => {
+          if (!destId) {
+            const created = findOrCreateSite(from.customerId, newName);
+            destId = created && created.id;
+          }
+          if (!destId) throw new Error('no-dest-site');
+          const dest = (loadSites() || []).find(x => x && x.id === destId);
+          const destName = dest ? dest.name : newName;
+          const remap = (rec) => {
+            if (!rec) return;
+            if (rec.siteId === fromId) rec.siteId = destId;
+          };
+          const jobs = loadJobs();
+          jobs.forEach((j) => {
+            if (!j) return;
+            if (j.siteId === fromId) {
+              j.siteId = destId;
+              j.site = destName;
+              if (prodLine && !j.productionLine) j.productionLine = prodLine;
+            }
+          });
+          saveJobs(jobs);
+          const inspections = loadInspections();
+          inspections.forEach(remap);
+          saveInspections(inspections);
+          const reqs = loadPartsRequests();
+          reqs.forEach((r) => {
+            if (!r) return;
+            if (r.siteId === fromId) { r.siteId = destId; r.site = destName; }
+            (r.parts || []).forEach((p) => { if (p && p.siteId === fromId) p.siteId = destId; });
+          });
+          savePartsRequests(reqs);
+          if (typeof window.getPunchlistBackup === 'function') {
+            const pl = window.getPunchlistBackup();
+            Object.keys(pl.jobs || {}).forEach((key) => {
+              (pl.jobs[key] || []).forEach((item) => { if (item && item.siteId === fromId) item.siteId = destId; });
+            });
+            await editorPunchlistSave(pl);
+          }
+          const machines = loadMachines();
+          machines.forEach((m) => {
+            if (!m) return;
+            if (m.currentSiteId === fromId) {
+              m.currentSiteId = destId;
+              if (prodLine && !m.productionLine) m.productionLine = prodLine;
+            }
+            (m.moveLog || []).forEach((e) => {
+              if (!e) return;
+              if (e.fromSiteId === fromId) e.fromSiteId = destId;
+              if (e.toSiteId === fromId) e.toSiteId = destId;
+            });
+          });
+          saveMachines(machines);
+          saveSites((loadSites() || []).filter(s => s && s.id !== fromId));
+          editorView = { name: 'site', id: destId };
+        });
+      });
+    }
+
+    function editorStartCustomerRename(id) {
+      const c = (loadCustomers() || []).find(x => x && x.id === id);
+      if (!c) return;
+      editorOpenForm('Rename customer',
+        '<div class="form-group"><label>Name</label><input type="text" id="edFieldInput" value="' + editorEsc(c.name) + '" /></div>',
+        () => {
+          const name = String((document.getElementById('edFieldInput') || {}).value || '').trim();
+          if (!name) { toast('Name required'); return false; }
+          editorApplyCustomerRename(id, name);
+        });
+    }
+    function editorApplyCustomerRename(id, newName) {
+      const c = (loadCustomers() || []).find(x => x && x.id === id);
+      if (!c) return;
+      const jobIds = (loadJobs() || []).filter(j => j && j.customerId === id).map(j => j.id);
+      const partIds = (loadPartsRequests() || []).filter(r => r && r.customerId === id).map(r => r.id);
+      editorConfirmPreview('Rename customer', editorPreviewHtml([{ text: c.name + ' → ' + newName, count: jobIds.length + ' jobs' }]), async () => {
+        await editorCommit('customer-rename', 'Renamed customer ' + c.name + ' → ' + newName, { customers: [id], jobs: jobIds, partsRequests: partIds }, () => {
+          const list = loadCustomers();
+          const rec = list.find(x => x && x.id === id);
+          if (rec) { rec.name = newName; rec.nameNormalized = normalizeMatchText(newName); rec.updatedAt = new Date().toISOString(); saveCustomers(list); }
+          const jobs = loadJobs();
+          jobs.forEach(j => { if (j && j.customerId === id) j.customer = newName; });
+          saveJobs(jobs);
+          const reqs = loadPartsRequests();
+          reqs.forEach(r => { if (r && r.customerId === id) r.customer = newName; });
+          savePartsRequests(reqs);
+        });
+      });
+    }
+    function editorStartCustomerMerge(fromId) {
+      const from = (loadCustomers() || []).find(x => x && x.id === fromId);
+      if (!from) return;
+      const others = (loadCustomers() || []).filter(c => c && c.id !== fromId);
+      let html = '<div class="form-group"><label>Merge into</label><select id="edTarget">';
+      others.forEach(c => { html += '<option value="' + editorEsc(c.id) + '">' + editorEsc(c.name) + '</option>'; });
+      html += '</select></div>';
+      editorOpenForm('Merge customer', html, () => {
+        const toId = (document.getElementById('edTarget') || {}).value;
+        if (!toId) return false;
+        editorApplyCustomerMerge(fromId, toId);
+      });
+    }
+    function editorApplyCustomerMerge(fromId, toId) {
+      const from = (loadCustomers() || []).find(x => x && x.id === fromId);
+      const to = (loadCustomers() || []).find(x => x && x.id === toId);
+      if (!from || !to) return;
+      const jobIds = (loadJobs() || []).filter(j => j && j.customerId === fromId).map(j => j.id);
+      const siteIds = (loadSites() || []).filter(s => s && s.customerId === fromId).map(s => s.id);
+      const destNames = new Set((loadSites() || []).filter(s => s && s.customerId === toId).map(s => s.nameNormalized));
+      const collisions = (loadSites() || []).filter(s => s && s.customerId === fromId && destNames.has(s.nameNormalized));
+      editorConfirmPreview('Merge customer', editorPreviewHtml([
+        { text: 'Merge ' + from.name + ' into ' + to.name, count: siteIds.length + ' sites, ' + jobIds.length + ' jobs' }
+      ], collisions.length ? (collisions.length + ' site name' + (collisions.length===1?'':'s') + ' will also exist under ' + to.name + ' — merge those by hand.') : ''), async () => {
+        const inspIds = (loadInspections() || []).filter(i => i && i.customerId === fromId).map(i => i.id);
+        const partIds = (loadPartsRequests() || []).filter(r => r && r.customerId === fromId).map(r => r.id);
+        const punch = [];
+        editorWalkPunchlist((_pl, key, item) => { if (item && item.customerId === fromId) punch.push({ listKey: key, id: item.id }); });
+        const machIds = (loadMachines() || []).filter(m => m && m.currentCustomerId === fromId).map(m => m.id);
+        await editorCommit('customer-merge', 'Merged customer ' + from.name + ' into ' + to.name, {
+          customers: [fromId, toId], sites: siteIds, jobs: jobIds, inspections: inspIds,
+          partsRequests: partIds, punchlistItems: punch, machines: machIds
+        }, async () => {
+          const jobs = loadJobs();
+          jobs.forEach(j => { if (j && j.customerId === fromId) { j.customerId = toId; j.customer = to.name; } });
+          saveJobs(jobs);
+          const inspections = loadInspections();
+          inspections.forEach(i => { if (i && i.customerId === fromId) i.customerId = toId; });
+          saveInspections(inspections);
+          const reqs = loadPartsRequests();
+          reqs.forEach(r => { if (r && r.customerId === fromId) { r.customerId = toId; r.customer = to.name; } });
+          savePartsRequests(reqs);
+          if (typeof window.getPunchlistBackup === 'function') {
+            const pl = window.getPunchlistBackup();
+            Object.keys(pl.jobs || {}).forEach((key) => {
+              (pl.jobs[key] || []).forEach((item) => { if (item && item.customerId === fromId) item.customerId = toId; });
+            });
+            await editorPunchlistSave(pl);
+          }
+          const sites = loadSites();
+          sites.forEach(s => { if (s && s.customerId === fromId) s.customerId = toId; });
+          saveSites(sites);
+          const machines = loadMachines();
+          machines.forEach(m => { if (m && m.currentCustomerId === fromId) m.currentCustomerId = toId; });
+          saveMachines(machines);
+          saveCustomers((loadCustomers() || []).filter(c => c && c.id !== fromId));
+        });
+        editorView = { name: 'customer', id: toId };
+      });
+    }
+
+    function editorTidyMoves(machineId) {
+      const m = (loadMachines() || []).find(x => x && x.id === machineId);
+      if (!m) return;
+      editorConfirmPreview('Tidy move log', editorPreviewHtml([{ text: 'Rewrite first-seen entries on ' + (m.serialNumber || '') + ' as placements. History is kept.' }]), async () => {
+        await editorCommit('move-tidy', 'Tidied first-seen log on ' + (m.serialNumber || ''), { machines: [machineId] }, () => {
+          const all = loadMachines();
+          const rec = all.find(x => x && x.id === machineId);
+          if (!rec) return;
+          rec.moveLog = (rec.moveLog || []).map((e) => {
+            if (!e || e.type === 'placed' || e.fromSiteId) return e;
+            return Object.assign({}, e, { type: 'placed' });
+          });
+          rec.updatedAt = new Date().toISOString();
+          saveMachines(all);
+        });
+      });
+    }
+
+    function editorMoveOldLineText(listKey) {
+      const items = [];
+      editorWalkPunchlist((_pl, key, item) => {
+        if (key === listKey && item && oldPunchlistSlotText(item.line) && !String(item.serial || '').trim()) items.push(item);
+      });
+      if (!items.length) return;
+      const preview = items.slice(0, 12).map(it => (it.description || it.location || 'Item') + ': “' + it.line + '” → comments').join('\n');
+      editorConfirmPreview('Move old line text', editorPreviewHtml([
+        { text: listKey, count: items.length + ' item' + (items.length===1?'':'s') + '. Line text is copied into comments, then the line field is cleared.' }
+      ]) + '<pre style="white-space:pre-wrap;font-size:12px;color:var(--muted);">' + editorEsc(preview) + '</pre>', async () => {
+        await editorCommit('pl-old-line', 'Moved old line text into comments on ' + listKey, {
+          punchlistItems: items.map(it => ({ listKey, id: it.id }))
+        }, async () => {
+          const pl = window.getPunchlistBackup();
+          (pl.jobs[listKey] || []).forEach((item) => {
+            if (!item || !oldPunchlistSlotText(item.line) || String(item.serial || '').trim()) return;
+            const bit = String(item.line).trim();
+            item.comments = item.comments ? (String(item.comments) + '\n' + bit) : bit;
+            item.line = '';
+          });
+          await editorPunchlistSave(pl);
+        });
+      });
+    }
+
+    function editorAttachSerial(serial) {
+      const m = findMachineBySerial(serial);
+      if (!m) { toast('No machine for that serial'); return; }
+      editorConfirmPreview('Attach machine id', editorPreviewHtml([{ text: 'Point records with serial ' + serial + ' at ' + m.id }]), async () => {
+        const punch = [];
+        editorWalkPunchlist((_pl, key, item) => {
+          if (item && normalizeMatchText(item.serial) === normalizeMatchText(serial) && !item.equipmentId) punch.push({ listKey: key, id: item.id });
+        });
+        const insp = (loadInspections() || []).filter(i => i && normalizeMatchText(i.serial) === normalizeMatchText(serial) && !i.equipmentId);
+        const reqs = (loadPartsRequests() || []).filter(r => r && (normalizeMatchText(r.serial) === normalizeMatchText(serial) && !r.equipmentId || (r.parts || []).some(p => p && normalizeMatchText(p.serial) === normalizeMatchText(serial) && !p.equipmentId)));
+        await editorCommit('attach-id', 'Attached equipment id for ' + serial, {
+          inspections: insp.map(i => i.id),
+          partsRequests: reqs.map(r => r.id),
+          punchlistItems: punch
+        }, async () => {
+          const inspections = loadInspections();
+          inspections.forEach(i => {
+            if (i && normalizeMatchText(i.serial) === normalizeMatchText(serial) && !i.equipmentId) i.equipmentId = m.id;
+          });
+          saveInspections(inspections);
+          const parts = loadPartsRequests();
+          parts.forEach(r => {
+            if (!r) return;
+            if (normalizeMatchText(r.serial) === normalizeMatchText(serial) && !r.equipmentId) r.equipmentId = m.id;
+            (r.parts || []).forEach(p => {
+              if (p && normalizeMatchText(p.serial) === normalizeMatchText(serial) && !p.equipmentId) p.equipmentId = m.id;
+            });
+          });
+          savePartsRequests(parts);
+          if (typeof window.getPunchlistBackup === 'function') {
+            const pl = window.getPunchlistBackup();
+            Object.keys(pl.jobs || {}).forEach((key) => {
+              (pl.jobs[key] || []).forEach((item) => {
+                if (item && normalizeMatchText(item.serial) === normalizeMatchText(serial) && !item.equipmentId) item.equipmentId = m.id;
+              });
+            });
+            await editorPunchlistSave(pl);
+          }
+        });
+      });
+    }
+
+    async function editorUndo(id) {
+      const log = editorLogLoad();
+      const entry = log.find(e => e && e.id === id);
+      if (!entry || entry.undone) return;
+      const newestOpen = log.find(e => e && !e.undone);
+      if (!newestOpen || newestOpen.id !== id) { toast('Undo the newest change first'); return; }
+      const chk = editorCurrentMatchesAfter(entry.after);
+      if (!chk.ok) {
+        editorConfirmPreview('Undo blocked', editorPreviewHtml([
+          { text: 'A record changed after this edit. Undo would wipe that later work.' }
+        ].concat(chk.mismatches.slice(0, 8).map(m => ({ text: m })))), null);
+        const apply = document.getElementById('edPreviewApply');
+        if (apply) apply.style.display = 'none';
+        return;
+      }
+      const unexpected = editorUnexpectedCreatedPointers(entry);
+      if (unexpected.length) {
+        editorConfirmPreview('Undo blocked', editorPreviewHtml([
+          { text: 'Cannot remove what this change created — something else still points at it.' }
+        ].concat(unexpected.slice(0, 8).map(h => ({ text: h.why })))), null);
+        const apply = document.getElementById('edPreviewApply');
+        if (apply) apply.style.display = 'none';
+        return;
+      }
+      const applyBtn = document.getElementById('edPreviewApply');
+      if (applyBtn) applyBtn.style.display = '';
+      editorConfirmPreview('Undo', editorPreviewHtml([{ text: entry.summary || entry.kind }]), async () => {
+        await editorRestoreSnapshot(entry.before);
+        editorDeleteCreated(entry.created);
+        const leftover = editorPointersToCreated(entry.created).filter((h) => {
+          // After restore, created records must not still be pointed at.
+          return true;
+        });
+        if (leftover.length) {
+          // Put the change back rather than leave dangling pointers.
+          try { await editorRestoreSnapshot(entry.after); } catch (e) {}
+          toast('Undo refused — ' + leftover[0].why);
+          return;
+        }
+        const latest = editorLogLoad();
+        const row = latest.find(e => e && e.id === id);
+        if (row) row.undone = true;
+        editorLogSave(latest);
+        toast('Undone');
+      });
+    }
+
+    function editorBindChrome() {
+      editorBindPinInputs();
+      const pinOk = document.getElementById('edPinOk');
+      const pinCancel = document.getElementById('edPinCancel');
+      const pinForgot = document.getElementById('edPinForgot');
+      if (pinOk && pinOk.dataset.bound !== '1') { pinOk.dataset.bound = '1'; pinOk.onclick = editorHandlePinOk; }
+      if (pinCancel && pinCancel.dataset.bound !== '1') { pinCancel.dataset.bound = '1'; pinCancel.onclick = () => editorCloseSheet('edPinSheet'); }
+      if (pinForgot && pinForgot.dataset.bound !== '1') { pinForgot.dataset.bound = '1'; pinForgot.onclick = editorResetPin; }
+      const prevApply = document.getElementById('edPreviewApply');
+      const prevCancel = document.getElementById('edPreviewCancel');
+      if (prevApply && prevApply.dataset.bound !== '1') { prevApply.dataset.bound = '1'; prevApply.onclick = editorRunApply; }
+      if (prevCancel && prevCancel.dataset.bound !== '1') {
+        prevCancel.dataset.bound = '1';
+        prevCancel.onclick = () => { editorPendingApply = null; editorCloseSheet('edPreviewSheet'); const a = document.getElementById('edPreviewApply'); if (a) a.style.display = ''; };
+      }
+      const formCancel = document.getElementById('edFormCancel');
+      if (formCancel && formCancel.dataset.bound !== '1') { formCancel.dataset.bound = '1'; formCancel.onclick = () => editorCloseSheet('edFormSheet'); }
+      const openBtn = document.getElementById('btnOpenEditor');
+      if (openBtn && openBtn.dataset.bound !== '1') { openBtn.dataset.bound = '1'; openBtn.onclick = editorOpenFromSettings; }
+    }
+
+    function editorOnHeaderBack() {
+      const open = ['edPinSheet','edPreviewSheet','edFormSheet','edBackupAskSheet'].some((id) => {
+        const el = document.getElementById(id);
+        return el && el.classList.contains('show');
+      });
+      if (open) { editorCloseAllSheets(); return true; }
+      if (editorView && editorView.name !== 'home') {
+        editorView = { name: 'home' };
+        editorRender();
+        return true;
+      }
+      editorLeave();
+      return true;
+    }
+
+    window.editorOpenFromSettings = editorOpenFromSettings;
+    window.editorLeave = editorLeave;
+    window.editorCloseAllSheets = editorCloseAllSheets;
+    window.editorOnHeaderBack = editorOnHeaderBack;
+    window.editorBindChrome = editorBindChrome;
+    window.__editorNeedsAttention = editorNeedsAttention;
+    window.__editorLogLoad = editorLogLoad;
+    window.__editorApplySiteRename = editorApplySiteRename;
+    window.__editorApplySiteMerge = editorApplySiteMerge;
+    window.__editorApplyMachineType = editorApplyMachineType;
+    window.__editorDoMachineMerge = editorDoMachineMerge;
+    window.__editorUndo = editorUndo;
+    window.__editorCurrentMatchesAfter = editorCurrentMatchesAfter;
+    window.__editorCommit = editorCommit;
+    window.__editorStripPhotoFields = editorStripPhotoFields;
+    window.__jobProductionLineOf = jobProductionLineOf;
+    window.__editorSkipBackup = function () { editorSessionBackupAsked = true; };
+    window.__editorDedupeJobPointers = editorDedupeJobPointers;
+    window.__editorDeleteCreated = editorDeleteCreated;
+    window.__applyMachineUpdate = applyMachineUpdate;
+    window.__runEquipmentBackfill = runEquipmentBackfill;
+    window.__editorDumpStores = function () {
+      let punchlist = null;
+      try { if (typeof window.getPunchlistBackup === 'function') punchlist = window.getPunchlistBackup(); } catch (e) {}
+      return {
+        customers: JSON.parse(JSON.stringify(loadCustomers() || [])),
+        sites: JSON.parse(JSON.stringify(loadSites() || [])),
+        machines: JSON.parse(JSON.stringify(loadMachines() || [])),
+        jobs: JSON.parse(JSON.stringify(loadJobs() || [])),
+        inspections: JSON.parse(JSON.stringify(loadInspections() || [])),
+        partsRequests: JSON.parse(JSON.stringify(loadPartsRequests() || [])),
+        punchlist: punchlist ? JSON.parse(JSON.stringify(punchlist)) : null,
+        serials: JSON.parse(JSON.stringify(loadSerials() || []))
+      };
+    };
+    window.__editorInstallStores = async function (data) {
+      if (data.customers) saveCustomers(data.customers);
+      if (data.sites) saveSites(data.sites);
+      if (data.machines) saveMachines(data.machines);
+      if (data.jobs) saveJobs(data.jobs);
+      if (data.inspections) saveInspections(data.inspections);
+      if (data.partsRequests) savePartsRequests(data.partsRequests);
+      if (data.serials) saveSerials(data.serials);
+      if (data.punchlist && typeof window.setPunchlistBackup === 'function') {
+        await window.setPunchlistBackup(data.punchlist);
+      }
+      return true;
+    };
+    window.__editorApplyCustomerMerge = editorApplyCustomerMerge;
+    window.__editorApplySerialCorrection = editorApplySerialCorrection;
+    window.__editorApplyMachineMove = editorApplyMachineMove;
+    window.__editorApplyMachineText = editorApplyMachineText;
+
+
     bootTheme();
     bindProfileForm();
     fillProfileForm();
+    try { if (typeof editorBindChrome === 'function') editorBindChrome(); } catch (e) {}
 
     })();
 

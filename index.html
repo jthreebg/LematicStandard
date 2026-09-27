@@ -33,7 +33,7 @@
       if(light)document.documentElement.classList.add('theme-light');
     }catch(e){}})();
   </script>
-  <link rel="stylesheet" href="app.css?v=157" />
+  <link rel="stylesheet" href="app.css?v=160" />
   
 
 
@@ -360,10 +360,89 @@
          (see build.py's version-placeholder substitution); it only ever
          shows up unfilled here when app.html is opened directly (unbuilt)
          rather than through the built app — see refreshAppVersionLine(). -->
+
+    <div class="storage-card" id="editorCard">
+      <div class="storage-kicker">Manager</div>
+      <div class="storage-sub">Correct machines, sites and customers on this phone.</div>
+      <div class="storage-actions">
+        <button type="button" class="btn" id="btnOpenEditor">Local Data Editor</button>
+      </div>
+    </div>
+
     <div class="storage-card" id="versionCard">
-      <div class="storage-sub" id="appVersionLine">Version 157</div>
+      <div class="storage-sub" id="appVersionLine">Version 160</div>
     </div>
   </div>
+
+  <!-- v160 Local Data Editor -->
+  <div class="screen" id="screenEditor">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker" id="edKicker">Manager</div>
+        <h2 id="edTitle">Local Data Editor</h2>
+      </div>
+    </div>
+    <div id="edBody"></div>
+  </div>
+
+  <div id="edPinSheet" class="save-sheet" hidden>
+    <div class="save-sheet-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <div style="padding:4px 8px 8px;text-align:center;">
+        <div class="ed-card-kicker" id="edPinKicker">Manager PIN</div>
+        <div style="font-size:1.05rem;font-weight:650;margin:6px 0 8px;" id="edPinTitle">Enter PIN</div>
+        <p class="ed-note" id="edPinNote">This PIN only stops accidental edits on this phone. It is not an account login.</p>
+        <div class="ed-pin-row">
+          <input type="password" inputmode="numeric" maxlength="1" id="edPin0" autocomplete="off" />
+          <input type="password" inputmode="numeric" maxlength="1" id="edPin1" autocomplete="off" />
+          <input type="password" inputmode="numeric" maxlength="1" id="edPin2" autocomplete="off" />
+          <input type="password" inputmode="numeric" maxlength="1" id="edPin3" autocomplete="off" />
+        </div>
+        <p class="ed-note" id="edPinError" style="color:var(--danger);" hidden></p>
+      </div>
+      <button type="button" class="btn btn-primary" id="edPinOk">Continue</button>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="edPinForgot" hidden>Reset PIN</button>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="edPinCancel">Cancel</button>
+    </div>
+  </div>
+
+  <div id="edPreviewSheet" class="save-sheet" hidden>
+    <div class="save-sheet-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <div class="modal-header" style="padding:4px 8px 8px;">
+        <h2 id="edPreviewTitle">Confirm change</h2>
+      </div>
+      <div id="edPreviewBody" class="modal-body" style="max-height:46vh;overflow:auto;padding:0 8px 8px;"></div>
+      <button type="button" class="btn btn-primary" id="edPreviewApply">Apply</button>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="edPreviewCancel">Cancel</button>
+    </div>
+  </div>
+
+  <div id="edFormSheet" class="save-sheet" hidden>
+    <div class="save-sheet-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <div class="modal-header" style="padding:4px 8px 8px;">
+        <h2 id="edFormTitle">Edit</h2>
+      </div>
+      <div id="edFormBody" class="modal-body" style="max-height:50vh;overflow:auto;padding:0 8px 8px;"></div>
+      <button type="button" class="btn btn-primary" id="edFormSave">Continue</button>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="edFormCancel">Cancel</button>
+    </div>
+  </div>
+
+  <div id="edBackupAskSheet" class="save-sheet" hidden>
+    <div class="save-sheet-card">
+      <div class="save-sheet-handle" aria-hidden="true"></div>
+      <div style="padding:4px 8px 12px;text-align:center;">
+        <div class="ed-card-kicker">Before the first edit</div>
+        <div style="font-size:1.05rem;font-weight:650;margin:6px 0 8px;">Backup this phone?</div>
+        <p class="ed-note">Recommended. You can skip this time, but you have to choose.</p>
+      </div>
+      <button type="button" class="btn btn-primary" id="edBackupNow">Backup now</button>
+      <button type="button" class="btn btn-outline save-sheet-cancel" id="edBackupSkip">Skip this time</button>
+    </div>
+  </div>
+
 
   <div class="modal-overlay" id="punchlistDiagModal" hidden aria-hidden="true">
     <div class="modal" id="punchlistDiagSheet">
@@ -715,17 +794,11 @@
         <label>Sales order (optional)</label>
         <input type="text" id="jobSO" placeholder="Sales order #" />
       </div>
-      <div class="form-group">
-        <label>Machine</label>
-        <select id="jobMachine">
-          <option value="LX-8">LX-8</option>
-          <option value="LX-7">LX-7</option>
-          <option value="LS-132">LS-132</option>
-          <option value="LS-133">LS-133</option>
-          <option value="__other">Other (type machine)</option>
-        </select>
-        <input type="text" id="jobMachineCustom" class="hidden" placeholder="Machine type" autocomplete="off" style="margin-top:8px" />
-      </div>
+      <!-- v159 (Phase 15B follow-up): the job-level Machine picker is
+           removed entirely — each serial/placeholder chip below carries
+           its own type (tap the type to change it via the shared picker).
+           job.machine is still saved, but only as a derived summary (see
+           computeJobMachineSummary()) for old exports/headers to read. -->
       <div class="form-group">
         <label>Serials</label>
         <div id="jobSerialChips" class="job-serial-chips"></div>
@@ -741,7 +814,14 @@
         <input type="text" id="jobSite" placeholder="Plant, line, or site name" list="jobSiteList" />
         <datalist id="jobSiteList"></datalist>
       </div>
-      <div class="form-group">
+      <!-- v158 simplification: production line is rare, so it's hidden
+           behind a "+ Production line" toggle button by default and only
+           shown automatically when the job being edited already has one.
+           Saving is unchanged: #jobProductionLine still holds the value
+           and saveJobFromForm() still reads it the same way regardless of
+           whether the field is currently visible. -->
+      <button type="button" class="btn-link" id="btnShowJobProductionLine">+ Production line</button>
+      <div class="form-group hidden" id="jobProductionLineGroup">
         <label>Production line (optional)</label>
         <input type="text" id="jobProductionLine" placeholder="e.g. Line 9" autocomplete="off" />
       </div>
@@ -805,14 +885,17 @@
         <input type="text" id="inpCustomer" placeholder="e.g. ABC Bakery – Plant 2" list="customerList" />
         <datalist id="customerList"></datalist>
       </div>
+      <!-- v159: driven by the shared type picker (checklist types only —
+           see openTypePicker/readInpModel/setInpModelField). Was a
+           <select> with 4 fixed options; converted to a plain hidden
+           input so it can hold ANY type the picker's "Other" allows (a
+           <select>'s .value can't be set to a string with no matching
+           <option>) while every existing `.value` read/write elsewhere in
+           the file keeps working unchanged. -->
       <div class="form-group">
         <label>Machine</label>
-        <select id="inpModel">
-          <option value="LX-8" selected>LX-8</option>
-          <option value="LX-7">LX-7</option>
-          <option value="LS-132">LS-132</option>
-          <option value="LS-133">LS-133</option>
-        </select>
+        <button type="button" class="btn btn-outline" id="inpModelTypeBtn">LX-8</button>
+        <input type="hidden" id="inpModel" value="LX-8" />
       </div>
       <div class="form-group">
         <label>Serial Number</label>
@@ -945,9 +1028,15 @@
             </select>
           </div>
         </div>
+        <!-- v159: driven by the shared type picker, restricted to types
+             that have an inspection checklist (see openTypePicker's
+             restrictToChecklist). The select + custom input are kept,
+             hidden, exactly as before — setInspectMachineFields()/
+             readInspectMachine() still read and write them the same way. -->
         <div class="form-group">
           <label>Machine</label>
-          <select id="inspectMachine">
+          <button type="button" class="btn btn-outline" id="inspectMachineTypeBtn">LX-8</button>
+          <select id="inspectMachine" class="hidden" aria-hidden="true" tabindex="-1">
             <option value="LX-8">LX-8</option>
             <option value="LX-7">LX-7</option>
             <option value="LS-132">LS-132</option>
@@ -1009,9 +1098,10 @@
   </div>
 
   <!-- v157 (Phase 15B): one small reusable text-entry sheet, used for
-       "Set line", "Add placeholder machine", and "Fill in serial" — each a
-       single one-tap-then-type action, so a bespoke modal per action isn't
-       needed. See openGenericTextPrompt(). -->
+       "Set line" and "Fill in serial" — each a single one-tap-then-type
+       action, so a bespoke modal per action isn't needed. See
+       openGenericTextPrompt(). ("Add placeholder machine" moved to the
+       shared type picker below in v159.) -->
   <div id="genericTextModal" class="modal-overlay hidden" aria-hidden="true">
     <div class="modal machine-sheet" role="dialog" aria-modal="true" aria-labelledby="genericTextTitle">
       <div class="modal-handle" aria-hidden="true"></div>
@@ -1025,6 +1115,37 @@
       <div class="modal-actions">
         <button type="button" id="genericTextCancel" class="btn btn-outline">Cancel</button>
         <button type="button" id="genericTextSave" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- v159 (Phase 15B follow-up): the ONE shared machine-type picker —
+       every place a type is chosen (job serial chips, "Add placeholder",
+       the inspection machine picker) opens this same sheet. See
+       openTypePicker(). Common types render as large one-tap buttons,
+       other known types as smaller pills, then "Other" reveals a text box
+       with suggestions from custom types already used on this device. -->
+  <div id="typePickerModal" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal machine-sheet" role="dialog" aria-modal="true" aria-labelledby="typePickerTitle">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <div class="modal-header"><h2 id="typePickerTitle">Machine type</h2></div>
+      <div class="modal-body">
+        <div id="typePickerCommon" class="type-picker-common"></div>
+        <div id="typePickerNote" class="type-picker-note hidden"></div>
+        <div id="typePickerOtherKnownWrap">
+          <div class="type-picker-other-label">Other known types</div>
+          <div id="typePickerOtherKnown" class="type-picker-other-known"></div>
+        </div>
+        <button type="button" class="btn-link" id="typePickerOtherBtn">Other</button>
+        <div class="form-group hidden" id="typePickerOtherGroup">
+          <label for="typePickerOtherInput">Machine type</label>
+          <input type="text" id="typePickerOtherInput" placeholder="Type machine name" autocomplete="off" list="typePickerOtherList" />
+          <datalist id="typePickerOtherList"></datalist>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="typePickerCancel" class="btn btn-outline">Cancel</button>
+        <button type="button" id="typePickerSave" class="btn btn-primary hidden">Save</button>
       </div>
     </div>
   </div>
@@ -1206,8 +1327,8 @@
   
   
   
-  <script src="qrcode.min.js?v=157" defer></script>
-  <script src="templates.js?v=157" defer></script>
-  <script src="app.js?v=157" defer></script>
+  <script src="qrcode.min.js?v=160" defer></script>
+  <script src="templates.js?v=160" defer></script>
+  <script src="app.js?v=160" defer></script>
 </body>
 </html>
