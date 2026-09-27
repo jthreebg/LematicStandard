@@ -1275,6 +1275,24 @@ const ICO = {
       if (!el) return;
       el.hidden = !window.__lxPersistDurableFailed;
     }
+    // v157 (Phase 15B, item 8 + amendment H): build.py fills in the real
+    // version number here when it builds app.js/index.html. If app.html is
+    // ever opened directly (unbuilt), that fill-in never happened — show
+    // "Version dev" instead of a raw placeholder. Deliberately does not
+    // spell out the placeholder text itself: build.py's substitution is a
+    // plain find-and-replace over the whole built file, so this check
+    // looks at the SHAPE of what's left (a plain number, or not) rather
+    // than matching the placeholder's exact text, which would just make
+    // build.py replace this check's own code too. Static, so this only
+    // needs to run once.
+    function refreshAppVersionLine() {
+      const el = document.getElementById('appVersionLine');
+      if (!el) return;
+      const m = el.textContent.match(/^Version\s+(.*)$/);
+      const value = m ? m[1].trim() : '';
+      if (!/^[0-9]+$/.test(value)) el.textContent = 'Version dev';
+    }
+    refreshAppVersionLine();
     async function refreshStorageCard() {
       const line = document.getElementById('storageLine');
       const sub = document.getElementById('storageSub');
@@ -1776,6 +1794,16 @@ const ICO = {
         // untouched, same as the other identity stores above.
         restoreIdentityStore('machines.json', saveMachines, 'machines');
 
+        // v157 fix (Phase 15B review round 2, item B.1): restored data
+        // needs machine links too, even on a device where the one-time
+        // backfill already ran (its "done" flag is per-device, not
+        // per-dataset, so it would otherwise never run again for this
+        // freshly-restored data). Calling runEquipmentBackfill() directly
+        // — not the gated runEquipmentBackfillIfNeeded() — always re-runs
+        // it here; it's idempotent (only fills IDs that are missing), so
+        // this is safe even when the restored data already had links.
+        try { await runEquipmentBackfill(); } catch (e) { console.warn('post-restore backfill failed', e); }
+
         refreshHome();
         let summary = punchlistRestored ? 'Backup restored'
           : punchlistFailed ? 'Backup restored — punchlists in this backup were unreadable and were not restored'
@@ -2075,10 +2103,20 @@ const ICO = {
     //     salesOrder,             // '' until known
     //     currentSiteId,          // most recent site this machine is at
     //     currentCustomerId,      // that site's customer, for convenience
-    //     lineLabel,              // '' until set — storage only, no editor yet
-    //     moveLog: [ { at, fromSiteId, toSiteId, source, jobId, previousLineLabel } ],
+    //     lineLabel,              // '' until set — the MACHINE line (e.g. "Line 1")
+    //     productionLine,         // '' until set — the PRODUCTION line (e.g. "Line 9"),
+    //                             // shared by several machines at a site (Phase 15B,
+    //                             // roadmap 3.7). Filled in only when empty — from the
+    //                             // job form's optional Production line field — never
+    //                             // overwritten by a later job.
+    //     moveLog: [ { at, fromSiteId, toSiteId, source, jobId, previousLineLabel, previousProductionLine } ],
     //     createdAt, updatedAt
     //   }
+    // Placeholder machines (type only, no serial yet — roadmap 3.6, Phase
+    // 15B) are NOT stored here. They live only on job.placeholderMachines
+    // (see saveJobFromForm) and never get a lx8_machines record, so they
+    // never appear in loadMachines(), backups' machines.json, or any
+    // autocomplete sourced from this store (approved amendment B).
     function loadMachines() {
       const src = STORE.load('machines');
       storeMem.machines = Array.isArray(src) ? src : [];
@@ -2121,6 +2159,7 @@ const ICO = {
         currentSiteAsOf: '',
         currentCustomerId: '',
         lineLabel: '',
+        productionLine: '',
         moveLog: [],
         createdAt: now,
         updatedAt: now
@@ -2223,20 +2262,32 @@ const ICO = {
         const isNewer = !knownAsOf || isNaN(knownAsOfMs) || isNaN(asOfMs) || asOfMs >= knownAsOfMs;
         if (updates.siteId !== m.currentSiteId) {
           if (isNewer) {
+            // v157 fix (Phase 15B review round 2, item A): a machine's very
+            // FIRST site assignment (it had no currentSiteId at all yet) is
+            // not a move — there's nothing to move it away from, so nothing
+            // should be cleared. Only a real move (it already had a
+            // different site on file) clears the line label/production
+            // line, exactly as before. moveLog itself still gets an entry
+            // either way (tidying first-placement log entries is 15C).
+            const isFirstPlacement = !m.currentSiteId;
             const moveEntry = {
               at: new Date().toISOString(),
               fromSiteId: m.currentSiteId || '',
               toSiteId: updates.siteId,
               source: opts.source || '',
               jobId: opts.jobId || '',
-              previousLineLabel: m.lineLabel || ''
+              previousLineLabel: m.lineLabel || '',
+              previousProductionLine: m.productionLine || ''
             };
             m.moveLog = Array.isArray(m.moveLog) ? m.moveLog.slice() : [];
             m.moveLog.push(moveEntry);
             report.moved = { fromSiteId: moveEntry.fromSiteId, toSiteId: moveEntry.toSiteId };
             m.currentSiteId = updates.siteId;
             m.currentSiteAsOf = asOf;
-            m.lineLabel = '';
+            if (!isFirstPlacement) {
+              m.lineLabel = '';
+              m.productionLine = '';
+            }
             changed = true;
           }
           // else: an older/stale record disagreeing with the current
@@ -2251,6 +2302,20 @@ const ICO = {
       }
       if (updates.customerId && updates.customerId !== m.currentCustomerId) {
         m.currentCustomerId = updates.customerId;
+        changed = true;
+      }
+
+      // Production line (Phase 15B, roadmap 3.7): fill-only-if-empty, from
+      // the job form's optional field. Unlike salesOrder this is never
+      // reported as a conflict — a differing later value is simply left
+      // alone, same as the machine-type-source rule for a job-sourced type.
+      // Deliberately handled AFTER the siteId block above: a brand-new
+      // machine's very first site assignment is itself logged as a "move"
+      // (fromSiteId ''), which clears productionLine/lineLabel as part of
+      // that — running this first would have the fill get wiped out by
+      // its own triggering call.
+      if (updates.productionLine && !(m.productionLine || '')) {
+        m.productionLine = String(updates.productionLine).trim();
         changed = true;
       }
 
@@ -2291,6 +2356,7 @@ const ICO = {
         const updates = {};
         if (job.machine) { updates.machineType = job.machine; updates.machineTypeSource = 'job'; }
         if (singleSerial && job.so) updates.salesOrder = job.so;
+        if (job.productionLine) updates.productionLine = job.productionLine;
         if (site) { updates.siteId = site.id; updates.customerId = customer.id; }
         const result = applyMachineUpdate(machine.id, updates, {
           source: opts.source || 'job-save',
@@ -2304,6 +2370,14 @@ const ICO = {
         }
       });
       job.equipmentIds = machineIds;
+      // Placeholder machines (type only, no serial yet) live on the job
+      // itself, never in the Machine store — same fill-only-if-empty rule
+      // for productionLine applies to them.
+      if (Array.isArray(job.placeholderMachines)) {
+        job.placeholderMachines.forEach(p => {
+          if (p && job.productionLine && !p.productionLine) p.productionLine = job.productionLine;
+        });
+      }
       return job;
     }
     // Same idea as resolveJobEquipmentSnapshot, for one inspection. Called
@@ -2361,6 +2435,90 @@ const ICO = {
       const results = inspection.results;
       if (results && typeof results === 'object' && Object.keys(results).length) return true;
       return false;
+    }
+
+    // ===== SERIAL LOCK (Phase 15B, approved amendment G) =====
+    // A serial can be added to a job any time, but once a real record
+    // (inspection, punchlist item, or parts line) points at its machine
+    // id, it can't be removed from the job — removing the chip would
+    // silently orphan that reference. Counts every reference across the
+    // three record types; the job itself doesn't count (removing FROM the
+    // job is what's being asked about). Read-only — never writes.
+    function findMachineBySerial(serial) {
+      const norm = normalizeMatchText(serial);
+      if (!norm) return null;
+      return (loadMachines() || []).find(m => m && m.serialNumberNormalized === norm) || null;
+    }
+    // v157 (Phase 15B, approved amendment A): the display/export source of
+    // truth for one record's equipment info — a punchlist item, a parts
+    // line, a parts request header. Prefers the snapshot taken at save
+    // time (so a later re-label or move never rewrites an old export);
+    // falls back to the live machine record only for a record saved
+    // before the snapshot fields existed.
+    function equipmentDisplayFor(record) {
+      const out = { productionLine: '', lineLabel: '', serial: (record && record.serial) || '', machineType: '', salesOrder: '' };
+      if (!record) return out;
+      const hasSnapshot = Object.prototype.hasOwnProperty.call(record, 'lineLabelAtSave') ||
+        Object.prototype.hasOwnProperty.call(record, 'productionLineAtSave') ||
+        Object.prototype.hasOwnProperty.call(record, 'machineTypeAtSave') ||
+        Object.prototype.hasOwnProperty.call(record, 'salesOrderAtSave');
+      if (hasSnapshot) {
+        out.lineLabel = record.lineLabelAtSave || '';
+        out.productionLine = record.productionLineAtSave || '';
+        out.machineType = record.machineTypeAtSave || '';
+        out.salesOrder = record.salesOrderAtSave || '';
+      } else if (record.equipmentId) {
+        const m = (loadMachines() || []).find(x => x && x.id === record.equipmentId);
+        if (m) {
+          out.lineLabel = m.lineLabel || '';
+          out.productionLine = m.productionLine || '';
+          out.machineType = m.machineType || '';
+          out.salesOrder = m.salesOrder || '';
+        }
+      }
+      return out;
+    }
+    // "<production line> · <machine line> · <serial>" (roadmap 3.7's export
+    // format), dropping any segment that's empty — never a bare " · ·  ".
+    function equipmentExportLine(record) {
+      const eq = equipmentDisplayFor(record);
+      return [eq.productionLine, eq.lineLabel, eq.serial].filter(Boolean).join(' · ');
+    }
+    function countRecordsUsingEquipmentId(equipmentId) {
+      if (!equipmentId) return 0;
+      let n = 0;
+      try { n += (loadInspections() || []).filter(i => i && i.equipmentId === equipmentId).length; } catch (e) {}
+      try {
+        if (typeof window.getPunchlistBackup === 'function') {
+          const pl = window.getPunchlistBackup();
+          const jobsObj = (pl && pl.jobs) || {};
+          Object.keys(jobsObj).forEach(key => {
+            (jobsObj[key] || []).forEach(item => {
+              if (item && item.equipmentId === equipmentId) n += 1;
+            });
+          });
+        }
+      } catch (e) {}
+      try {
+        (loadPartsRequests() || []).forEach(req => {
+          if (!req) return;
+          if (req.equipmentId === equipmentId) n += 1;
+          (req.parts || []).forEach(line => {
+            if (line && line.equipmentId === equipmentId) n += 1;
+          });
+        });
+      } catch (e) {}
+      return n;
+    }
+    // Returns '' if the serial may be freely removed, or an explanatory
+    // message (approved wording) if it's locked.
+    function jobSerialRemovalBlockedMessage(serial) {
+      const machine = findMachineBySerial(serial);
+      if (!machine) return '';
+      const n = countRecordsUsingEquipmentId(machine.id);
+      if (!n) return '';
+      return "Can't remove — " + n + ' record' + (n === 1 ? '' : 's') + ' use' + (n === 1 ? 's' : '') +
+        ' this serial. A manager can correct it in the Local Data Editor.';
     }
 
     // ===== ONE-TIME EQUIPMENT BACKFILL (Phase 15A) =====
@@ -2539,7 +2697,10 @@ const ICO = {
       };
     }
     function newPartsRequestLine() {
-      return { id: newEntityId('prp'), description: '', qty: 1, partNumber: '', notes: '', photoId: null, photoThumb: '', urgent: false };
+      // serial/machineType/salesOrder (Phase 15B, item 7): each line
+      // carries its own equipment snapshot rather than only the request
+      // header's, since one job's parts can be for different machines.
+      return { id: newEntityId('prp'), description: '', qty: 1, partNumber: '', notes: '', photoId: null, photoThumb: '', urgent: false, serial: '', machineType: '', salesOrder: '' };
     }
     // Phase 15A: stamps/refreshes a parts request's own customerId/siteId/
     // equipmentId (from its linked job and its own header `serial` field)
@@ -2556,15 +2717,31 @@ const ICO = {
       req.customerId = job ? (job.customerId || '') : (req.customerId || '');
       req.siteId = job ? (job.siteId || '') : (req.siteId || '');
       const headerSerial = String(req.serial || '').trim();
+      let headerMachine = null;
       if (headerSerial && typeof findOrCreateMachine === 'function') {
-        const machine = findOrCreateMachine(headerSerial);
-        if (machine) req.equipmentId = machine.id;
+        headerMachine = findOrCreateMachine(headerSerial);
+        if (headerMachine) req.equipmentId = headerMachine.id;
       }
       (req.parts || []).forEach(line => {
         if (!line) return;
         if (!line.equipmentId) line.equipmentId = req.equipmentId || '';
         line.customerId = req.customerId || '';
         line.siteId = req.siteId || '';
+        // A manually-added line (or one from before this field existed)
+        // with no serial of its own inherits the header's, same rule as
+        // equipmentId above; a line with its own source serial (see
+        // syncPartsRequestFromSource) keeps it.
+        if (!line.serial && headerSerial) {
+          line.serial = headerSerial;
+          if (headerMachine) {
+            line.machineType = headerMachine.machineType || '';
+            line.salesOrder = headerMachine.salesOrder || '';
+            line.lineLabelAtSave = headerMachine.lineLabel || '';
+            line.productionLineAtSave = headerMachine.productionLine || '';
+            line.machineTypeAtSave = headerMachine.machineType || '';
+            line.salesOrderAtSave = headerMachine.salesOrder || '';
+          }
+        }
       });
     }
     // Auto-generates or updates a parts-request line from a punchlist
@@ -2618,14 +2795,32 @@ const ICO = {
           line.urgent = !!urgent;
           line.source = { type: sourceType, id: sourceId, label: findingLabel || '' };
           if (serialNote) line.notes = serialNote;
-          if (sourceMachine) line.equipmentId = sourceMachine.id;
+          if (sourceMachine) {
+            line.equipmentId = sourceMachine.id;
+            line.serial = serial || '';
+            line.machineType = sourceMachine.machineType || '';
+            line.salesOrder = sourceMachine.salesOrder || '';
+            line.lineLabelAtSave = sourceMachine.lineLabel || '';
+            line.productionLineAtSave = sourceMachine.productionLine || '';
+            line.machineTypeAtSave = sourceMachine.machineType || '';
+            line.salesOrderAtSave = sourceMachine.salesOrder || '';
+          }
         } else {
           const line = newPartsRequestLine();
           line.description = desc;
           line.urgent = !!urgent;
           line.source = { type: sourceType, id: sourceId, label: findingLabel || '' };
           if (serialNote) line.notes = serialNote;
-          if (sourceMachine) line.equipmentId = sourceMachine.id;
+          if (sourceMachine) {
+            line.equipmentId = sourceMachine.id;
+            line.serial = serial || '';
+            line.machineType = sourceMachine.machineType || '';
+            line.salesOrder = sourceMachine.salesOrder || '';
+            line.lineLabelAtSave = sourceMachine.lineLabel || '';
+            line.productionLineAtSave = sourceMachine.productionLine || '';
+            line.machineTypeAtSave = sourceMachine.machineType || '';
+            line.salesOrderAtSave = sourceMachine.salesOrder || '';
+          }
           req.parts.push(line);
         }
       }
@@ -2684,6 +2879,15 @@ const ICO = {
       parts.forEach((p, i) => {
         const sku = p.partNumber ? '  [' + p.partNumber + ']' : '';
         lines.push((i + 1) + '. ' + (p.qty || 1) + '× ' + (p.description || 'Unspecified part') + sku);
+        // v157 (Phase 15B, item 7 + amendment E): each line shows its OWN
+        // serial/type/SO/lines — a job with more than one machine can have
+        // parts for different ones, so the request header alone isn't
+        // enough once there's more than one line.
+        const eq = (typeof equipmentDisplayFor === 'function') ? equipmentDisplayFor(p) : null;
+        if (eq && (eq.productionLine || eq.lineLabel || eq.serial)) {
+          const bits = [eq.productionLine, eq.lineLabel, eq.serial, eq.machineType, eq.salesOrder ? 'SO ' + eq.salesOrder : ''].filter(Boolean);
+          lines.push('   Machine: ' + bits.join(' · '));
+        }
         if (p.notes) lines.push('   Notes: ' + p.notes);
         if (i < parts.length - 1) lines.push('');
       });
@@ -3217,10 +3421,59 @@ const ICO = {
     }
 
     function fillJobCustomerList() {
-      const jobs = loadJobs();
-      const customers = [...new Set(jobs.map(j => j.customer).filter(Boolean))];
+      const names = new Set();
+      try { (loadCustomers() || []).forEach(c => c && c.name && names.add(c.name)); } catch (e) {}
+      try { loadJobs().forEach(j => j && j.customer && names.add(j.customer)); } catch (e) {}
       const dl = document.getElementById('jobCustomerList');
-      if (dl) dl.innerHTML = customers.map(c => `<option value="${jobEsc(c)}">`).join('');
+      if (dl) dl.innerHTML = [...names].map(c => `<option value="${jobEsc(c)}">`).join('');
+    }
+    // v157 (Phase 15B, item 1 + approved amendment D): Site suggestions are
+    // scoped to the entered customer (every known site if the customer is
+    // new/blank, so nothing is ever hidden — just not yet narrowed).
+    function fillJobSiteList(customerName) {
+      const dl = document.getElementById('jobSiteList');
+      if (!dl) return;
+      const names = new Set();
+      try {
+        const custNorm = normalizeMatchText(customerName);
+        const customers = loadCustomers() || [];
+        const cust = custNorm ? customers.find(c => c && c.nameNormalized === custNorm) : null;
+        const sites = loadSites() || [];
+        (cust ? sites.filter(s => s && s.customerId === cust.id) : sites).forEach(s => s && s.name && names.add(s.name));
+      } catch (e) {}
+      dl.innerHTML = [...names].map(s => `<option value="${jobEsc(s)}">`).join('');
+    }
+    // Serial suggestions: machines at the entered site first, then that
+    // customer's other machines, then everything else (approved amendment
+    // D) — so the closest match is always what a technician sees typing.
+    function machineSerialsScopedTo(customerName, siteName) {
+      const machines = loadMachines() || [];
+      let siteId = '', customerId = '';
+      try {
+        const custNorm = normalizeMatchText(customerName);
+        const customers = loadCustomers() || [];
+        const cust = custNorm ? customers.find(c => c && c.nameNormalized === custNorm) : null;
+        if (cust) {
+          customerId = cust.id;
+          const siteNorm = normalizeMatchText(siteName);
+          const sites = loadSites() || [];
+          const site = siteNorm ? sites.find(s => s && s.customerId === cust.id && s.nameNormalized === siteNorm) : null;
+          if (site) siteId = site.id;
+        }
+      } catch (e) {}
+      const atSite = [], atCustomer = [], rest = [];
+      machines.forEach(m => {
+        if (!m || !m.serialNumber) return;
+        if (siteId && m.currentSiteId === siteId) atSite.push(m.serialNumber);
+        else if (customerId && m.currentCustomerId === customerId) atCustomer.push(m.serialNumber);
+        else rest.push(m.serialNumber);
+      });
+      return atSite.concat(atCustomer, rest);
+    }
+    function fillJobSerialList(customerName, siteName) {
+      const dl = document.getElementById('jobSerialAutocompleteList');
+      if (!dl) return;
+      dl.innerHTML = machineSerialsScopedTo(customerName, siteName).map(s => `<option value="${jobEsc(s)}">`).join('');
     }
 
     function initJobForm(job) {
@@ -3232,12 +3485,23 @@ const ICO = {
       document.getElementById('jobEndDate').value = job?.endDate || '';
       document.getElementById('jobPO').value = job?.po || '';
       document.getElementById('jobSO').value = job?.so || '';
+      const prodLineEl = document.getElementById('jobProductionLine');
+      if (prodLineEl) prodLineEl.value = job?.productionLine || '';
       document.getElementById('jobStatus').value = job?.status || 'Planned';
       document.getElementById('jobScope').value = job?.scope || '';
       document.getElementById('jobNotes').value = job?.notes || '';
       fillJobCustomerList();
+      fillJobSiteList(job?.customer || '');
+      fillJobSerialList(job?.customer || '', job?.site || '');
       setJobMachineFields(job?.machine || 'LX-8');
       jobSerialsDraft = normalizeJobSerials(Array.isArray(job?.serials) ? job.serials : []);
+      jobPlaceholdersDraft = Array.isArray(job?.placeholderMachines) ? job.placeholderMachines.map(p => Object.assign({}, p)) : [];
+      // v157 fix (Phase 15B review, item 3): any "Fill in serial" taps from
+      // a previous, cancelled edit of this (or another) job must not carry
+      // over — the conversion itself is deferred until Save Job (see
+      // jobPendingPlaceholderConversions below), so a fresh form always
+      // starts with an empty queue.
+      jobPendingPlaceholderConversions = [];
       populateJobSerialSelect(jobSerialsDraft, jobSerialsDraft[0] || '');
       if (typeof renderJobSerialChips === 'function') renderJobSerialChips();
       updateJobMachineSummary();
@@ -3291,6 +3555,38 @@ const ICO = {
       updateJobMachineSummary();
     }
 
+    // v157 (Phase 15B): one small reusable text-entry sheet for the
+    // several "typed once" one-tap actions (Set line, Add placeholder
+    // machine, Fill in serial). onSave is called with the trimmed value
+    // only when it's non-empty; an empty save or Cancel does nothing.
+    let genericTextPromptOnSave = null;
+    function openGenericTextPrompt(opts) {
+      opts = opts || {};
+      const modal = document.getElementById('genericTextModal');
+      if (!modal) return;
+      const title = document.getElementById('genericTextTitle');
+      const label = document.getElementById('genericTextLabel');
+      const input = document.getElementById('genericTextInput');
+      if (title) title.textContent = opts.title || 'Enter a value';
+      if (label) label.textContent = opts.label || 'Value';
+      if (input) {
+        input.placeholder = opts.placeholder || '';
+        input.value = opts.value || '';
+      }
+      genericTextPromptOnSave = typeof opts.onSave === 'function' ? opts.onSave : null;
+      modal.classList.remove('hidden');
+      modal.classList.add('show');
+      modal.setAttribute('aria-hidden', 'false');
+      if (input) setTimeout(() => { try { input.focus(); } catch (e) {} }, 0);
+    }
+    function closeGenericTextModal() {
+      const modal = document.getElementById('genericTextModal');
+      if (!modal) return;
+      modal.classList.add('hidden');
+      modal.classList.remove('show');
+      modal.setAttribute('aria-hidden', 'true');
+      genericTextPromptOnSave = null;
+    }
 
     function serialSortValue(s) {
       const m = String(s || '').match(/(\d+)(?!.*\d)/);
@@ -3313,32 +3609,242 @@ const ICO = {
     function taggedJobSerials(list) {
       return normalizeJobSerials(list).map((serial, i) => ({ serial, line: String(i + 1) }));
     }
+    // v157 (Phase 15B, roadmap 3.6/3.7): what the technician actually SEES
+    // on a chip — "<machine line> · <serial> · <type>" — is now built from
+    // the machine record, never from sort position. This is display only:
+    // taggedJobSerials()'s "line" (the array index, used to key punchlist
+    // items via item.line/serialForLine) is left completely untouched, so
+    // existing punchlist data keeps working exactly as before.
+    function jobSerialChipSegments(serial, machine) {
+      const segs = [];
+      segs.push((machine && machine.lineLabel) ? machine.lineLabel : '');
+      segs.push(serial);
+      if (machine && machine.machineType) segs.push(machine.machineType);
+      return segs.filter(Boolean);
+    }
+    // Placeholder machines (type only, no serial yet — roadmap 3.6). Kept
+    // on the job itself (job.placeholderMachines), never in lx8_machines,
+    // so they never show up in autocomplete or backups' machines.json
+    // (approved amendment B). Each entry: { id, type, lineLabel, productionLine }.
+    let jobPlaceholdersDraft = [];
+    // v157 fix (Phase 15B review, item 3): "Fill in serial" used to convert
+    // the placeholder (write the real machine, reassign every existing
+    // inspection/punchlist item/parts line onto it) the instant the
+    // technician typed the serial — even if they then cancelled the job
+    // edit entirely. That's a real write that should only happen once the
+    // job is actually saved. Each queued entry is { placeholder, serial };
+    // saveJobFromForm() drains this queue via convertPlaceholderToSerial()
+    // right before it resolves the job's own equipment snapshot, and
+    // initJobForm() clears it for a fresh form (see above) so a cancelled
+    // edit's queued conversions are simply discarded, never applied.
+    let jobPendingPlaceholderConversions = [];
+    function newPlaceholderId() {
+      return 'ph_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
     function renderJobSerialChips() {
       const wrap = document.getElementById('jobSerialChips');
       if (!wrap) return;
       jobSerialsDraft = normalizeJobSerials(jobSerialsDraft);
-      if (!jobSerialsDraft.length) {
+      if (!Array.isArray(jobPlaceholdersDraft)) jobPlaceholdersDraft = [];
+      if (!jobSerialsDraft.length && !jobPlaceholdersDraft.length) {
         wrap.innerHTML = '<div class="job-serial-empty">No serials yet</div>';
         updateJobMachineSummary();
         return;
       }
-      const tagged = taggedJobSerials(jobSerialsDraft);
-      wrap.innerHTML = tagged.map((row, i) =>
-        `<div class="job-serial-row">
-          <span class="line-chip on">${jobEsc(row.line)}</span>
-          <span class="job-serial-text">${jobEsc(row.serial)}</span>
+      const realRows = jobSerialsDraft.map((serial, i) => {
+        const machine = findMachineBySerial(serial);
+        const segs = jobSerialChipSegments(serial, machine);
+        return `<div class="job-serial-row" data-kind="serial" data-idx="${i}">
+          <span class="job-serial-text">${jobEsc(segs.join(' · '))}</span>
+          ${machine && machine.lineLabel ? '' : '<button type="button" class="btn-link job-set-line" data-kind="serial" data-idx="' + i + '">Set line</button>'}
           <button type="button" class="job-serial-chip job-serial-remove" data-idx="${i}" aria-label="Remove">×</button>
-        </div>`
-      ).join('');
+        </div>`;
+      });
+      const placeholderRows = jobPlaceholdersDraft.map((ph, i) => {
+        const segs = [ph.lineLabel || '', 'Placeholder', ph.type || ''].filter(Boolean);
+        return `<div class="job-serial-row" data-kind="placeholder" data-idx="${i}">
+          <span class="job-serial-text">${jobEsc(segs.join(' · '))}</span>
+          ${ph.lineLabel ? '' : '<button type="button" class="btn-link job-set-line" data-kind="placeholder" data-idx="' + i + '">Set line</button>'}
+          <button type="button" class="btn-link job-fill-serial" data-idx="${i}">Fill in serial</button>
+          <button type="button" class="job-serial-chip job-placeholder-remove" data-idx="${i}" aria-label="Remove">×</button>
+        </div>`;
+      });
+      wrap.innerHTML = realRows.join('') + placeholderRows.join('');
       wrap.querySelectorAll('.job-serial-remove').forEach(btn => {
         btn.addEventListener('click', () => {
           const idx = Number(btn.getAttribute('data-idx'));
+          const serial = jobSerialsDraft[idx];
+          const blocked = jobSerialRemovalBlockedMessage(serial);
+          if (blocked) { toast(blocked); return; }
           jobSerialsDraft.splice(idx, 1);
           jobSerialsDraft = normalizeJobSerials(jobSerialsDraft);
+          // Removing a just-converted serial before Save Job cancels its
+          // queued conversion too — nothing should be written for it.
+          jobPendingPlaceholderConversions = jobPendingPlaceholderConversions.filter(p => p.serial.toLowerCase() !== serial.toLowerCase());
           renderJobSerialChips();
         });
       });
+      wrap.querySelectorAll('.job-placeholder-remove').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.getAttribute('data-idx'));
+          const ph = jobPlaceholdersDraft[idx];
+          const n = ph ? countRecordsUsingEquipmentId(ph.id) : 0;
+          if (n) { toast("Can't remove — " + n + ' record' + (n === 1 ? '' : 's') + ' use' + (n === 1 ? 's' : '') + " this placeholder. A manager can correct it in the Local Data Editor."); return; }
+          jobPlaceholdersDraft.splice(idx, 1);
+          renderJobSerialChips();
+        });
+      });
+      wrap.querySelectorAll('.job-set-line').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.getAttribute('data-idx'));
+          const kind = btn.getAttribute('data-kind');
+          const current = kind === 'placeholder' ? (jobPlaceholdersDraft[idx] && jobPlaceholdersDraft[idx].lineLabel) : ((findMachineBySerial(jobSerialsDraft[idx]) || {}).lineLabel);
+          openGenericTextPrompt({
+            title: 'Set line',
+            label: 'Machine line label',
+            placeholder: 'e.g. Line 1',
+            value: current || '',
+            onSave: (v) => {
+              if (kind === 'placeholder') {
+                if (jobPlaceholdersDraft[idx]) jobPlaceholdersDraft[idx].lineLabel = v;
+              } else {
+                const serial = jobSerialsDraft[idx];
+                const m = findOrCreateMachine(serial);
+                if (m) setMachineLineLabel(m.id, v);
+              }
+              renderJobSerialChips();
+            }
+          });
+        });
+      });
+      wrap.querySelectorAll('.job-fill-serial').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.getAttribute('data-idx'));
+          const ph = jobPlaceholdersDraft[idx];
+          if (!ph) return;
+          openGenericTextPrompt({
+            title: 'Fill in serial',
+            label: 'Serial number',
+            placeholder: 'Serial number',
+            value: '',
+            onSave: (serial) => {
+              // Draft-only: queue the real conversion for Save Job (see
+              // jobPendingPlaceholderConversions) instead of writing to the
+              // machine store / reassigning references right now.
+              jobPendingPlaceholderConversions.push({ placeholder: Object.assign({}, ph), serial });
+              jobPlaceholdersDraft.splice(idx, 1);
+              if (!jobSerialsDraft.some(s => jobSerialText(s).toLowerCase() === serial.toLowerCase())) jobSerialsDraft.push(serial);
+              jobSerialsDraft = normalizeJobSerials(jobSerialsDraft);
+              renderJobSerialChips();
+            }
+          });
+        });
+      });
       updateJobMachineSummary();
+    }
+    // Sets a machine's line label directly (an explicit one-tap user
+    // action, so — unlike productionLine's fill-only-once rule — this may
+    // correct an existing label, same as roadmap 3.3's "one-tap
+    // correct-once action").
+    function setMachineLineLabel(machineId, label) {
+      const all = loadMachines();
+      const idx = all.findIndex(m => m && m.id === machineId);
+      if (idx < 0) return null;
+      all[idx].lineLabel = String(label || '').trim();
+      all[idx].updatedAt = new Date().toISOString();
+      saveMachines(all);
+      return all[idx];
+    }
+    // Converts a type-only placeholder into a real machine record once its
+    // serial is known on-site (roadmap 3.6): creates/looks up the real
+    // machine by serial, carries over the placeholder's line label/
+    // production line (fill-only, never overwriting anything already on
+    // the real record), then reassigns every inspection/punchlist item/
+    // parts line that referenced the placeholder's id over to the real id.
+    function convertPlaceholderToSerial(placeholder, serial) {
+      const machine = findOrCreateMachine(serial);
+      if (!machine) return null;
+      const updates = {};
+      if (placeholder.type && !machine.machineType) { updates.machineType = placeholder.type; updates.machineTypeSource = 'job'; }
+      if (placeholder.productionLine) updates.productionLine = placeholder.productionLine;
+      if (Object.keys(updates).length) applyMachineUpdate(machine.id, updates, { source: 'placeholder-convert' });
+      if (placeholder.lineLabel && !machine.lineLabel) setMachineLineLabel(machine.id, placeholder.lineLabel);
+      // v157 fix (Phase 15B review round 2, item D): applyMachineUpdate()/
+      // setMachineLineLabel() each load and save their OWN copy of the
+      // Machine store, so the `machine` object above is stale by now —
+      // re-read it so the reassignment below carries the real, final
+      // type/line label/production line, not what it was before conversion.
+      const finalMachine = findMachineBySerial(serial) || machine;
+      reassignEquipmentReferences(placeholder.id, finalMachine, serial);
+      return finalMachine;
+    }
+    // Moves every stored reference from a placeholder's id to the real
+    // machine's — used only for placeholder → real machine conversion.
+    // v157 fix (Phase 15B review round 2, item D): a punchlist item or
+    // parts line that pointed at the placeholder had no serial of its own
+    // (placeholders don't have one) and its snapshot (lineLabelAtSave etc.)
+    // was stamped from the PLACEHOLDER's fields at save time — once it's
+    // repointed at the real machine, both of those now need to reflect the
+    // real machine too, or the item form/exports would keep showing
+    // whatever the placeholder used to look like.
+    function reassignEquipmentReferences(fromId, toMachine, serial) {
+      const toId = toMachine && toMachine.id;
+      if (!fromId || !toId || fromId === toId) return;
+      const snap = {
+        lineLabelAtSave: (toMachine && toMachine.lineLabel) || '',
+        productionLineAtSave: (toMachine && toMachine.productionLine) || '',
+        machineTypeAtSave: (toMachine && toMachine.machineType) || '',
+        salesOrderAtSave: (toMachine && toMachine.salesOrder) || ''
+      };
+      try {
+        const inspections = loadInspections() || [];
+        let changed = false;
+        inspections.forEach(i => { if (i && i.equipmentId === fromId) { i.equipmentId = toId; changed = true; } });
+        if (changed) saveInspections(inspections);
+      } catch (e) {}
+      try {
+        if (typeof window.getPunchlistBackup === 'function' && typeof window.setPunchlistBackup === 'function') {
+          const pl = window.getPunchlistBackup();
+          const jobsObj = (pl && pl.jobs) || {};
+          let changed = false;
+          Object.keys(jobsObj).forEach(key => {
+            (jobsObj[key] || []).forEach(item => {
+              if (item && item.equipmentId === fromId) {
+                item.equipmentId = toId;
+                if (!item.serial && serial) item.serial = serial;
+                item.lineLabelAtSave = snap.lineLabelAtSave;
+                item.productionLineAtSave = snap.productionLineAtSave;
+                item.machineTypeAtSave = snap.machineTypeAtSave;
+                item.salesOrderAtSave = snap.salesOrderAtSave;
+                changed = true;
+              }
+            });
+          });
+          if (changed) window.setPunchlistBackup(pl);
+        }
+      } catch (e) {}
+      try {
+        const reqs = loadPartsRequests() || [];
+        let changed = false;
+        reqs.forEach(req => {
+          if (!req) return;
+          if (req.equipmentId === fromId) { req.equipmentId = toId; changed = true; }
+          (req.parts || []).forEach(line => {
+            if (line && line.equipmentId === fromId) {
+              line.equipmentId = toId;
+              if (!line.serial && serial) line.serial = serial;
+              line.machineType = snap.machineTypeAtSave;
+              line.salesOrder = snap.salesOrderAtSave;
+              line.lineLabelAtSave = snap.lineLabelAtSave;
+              line.productionLineAtSave = snap.productionLineAtSave;
+              line.machineTypeAtSave = snap.machineTypeAtSave;
+              line.salesOrderAtSave = snap.salesOrderAtSave;
+              changed = true;
+            }
+          });
+        });
+        if (changed) savePartsRequests(reqs);
+      } catch (e) {}
     }
 
     function addJobSerialFromInput() {
@@ -3350,6 +3856,34 @@ const ICO = {
       jobSerialsDraft = normalizeJobSerials(jobSerialsDraft);
       input.value = '';
       renderJobSerialChips();
+      // v157 (Phase 15B, item 1 + approved amendment F): a known serial
+      // suggests its sales order and machine type. Sales order is only
+      // ever auto-filled into the job's own (currently empty) SO box when
+      // this is the job's only serial — matches the existing single-serial
+      // restriction on the reverse direction (job SO -> machine record).
+      const machine = findMachineBySerial(v);
+      if (machine) {
+        if (jobSerialsDraft.length === 1 && machine.salesOrder) {
+          const soEl = document.getElementById('jobSO');
+          if (soEl && !soEl.value.trim()) soEl.value = machine.salesOrder;
+        }
+        if (machine.machineType) {
+          toast('Known serial — ' + machine.machineType + (machine.salesOrder ? ' · SO ' + machine.salesOrder : ''));
+        }
+      }
+    }
+    function addJobPlaceholderMachine() {
+      openGenericTextPrompt({
+        title: 'Add placeholder machine',
+        label: 'Machine type',
+        placeholder: 'e.g. LX-8',
+        value: readJobMachine() || '',
+        onSave: (type) => {
+          if (!Array.isArray(jobPlaceholdersDraft)) jobPlaceholdersDraft = [];
+          jobPlaceholdersDraft.push({ id: newPlaceholderId(), type, lineLabel: '', productionLine: '' });
+          renderJobSerialChips();
+        }
+      });
     }
 
     function setInspectMachineFields(value) {
@@ -3474,6 +4008,19 @@ const ICO = {
       }
     }
 
+    // v157 fix (Phase 15B review, item 2): whenever the machine picker's
+    // serial resolves to a known machine with a confirmed/known type, the
+    // type field follows it (still a one-tap change away) — same rule as
+    // the roadmap 3.6 "type belongs to the serial" behavior elsewhere.
+    // Only fills in when the machine actually HAS a type; a never-seen
+    // serial leaves whatever type is already showing (the job's default)
+    // untouched, per the plan's "pre-filled for one-tap confirm" rule.
+    function syncInspectMachineFromSerial(serial) {
+      const s = String(serial || '').trim();
+      if (!s) return;
+      const machine = (typeof findMachineBySerial === 'function') ? findMachineBySerial(s) : null;
+      if (machine && machine.machineType) setInspectMachineFields(machine.machineType);
+    }
     function readJobSerial() {
       const sel = document.getElementById('inspectSerialSelect');
       const custom = document.getElementById('inspectSerialInput');
@@ -3776,10 +4323,18 @@ const ICO = {
       if (typeof populateInspectJobSelect === 'function') populateInspectJobSelect(job && job.id);
       setInspectMachineFields(job.machine || 'LX-8');
       populateJobSerialSelect(jobSerialsDraft, jobSerialsDraft[0] || '');
+      // v157 fix (Phase 15B review, item 2): populateJobSerialSelect() may
+      // have pre-selected a single serial above — if that serial already
+      // has a known type, show it right away rather than the job default.
+      syncInspectMachineFromSerial(readJobSerial());
       openMachineModal();
       toast('Add machine type and serial number to start inspection');
     }
 
+    // v157 (Phase 15B, item 1 + amendment D): the linked job's own serials
+    // (if any) come first — they're the most likely match — followed by
+    // every other known machine scoped to the typed customer (no site
+    // field on this screen, so there's no site tier here).
     function fillInspectionSerialOptions(job) {
       let dl = document.getElementById('jobSerialList');
       if (!dl) {
@@ -3791,8 +4346,18 @@ const ICO = {
           serialInp.parentNode.appendChild(dl);
         }
       }
-      const serials = (job && Array.isArray(job.serials)) ? job.serials : [];
-      dl.innerHTML = serials.map(s => `<option value="${jobEsc(s)}">`).join('');
+      const jobSerials = (job && Array.isArray(job.serials)) ? job.serials.slice() : [];
+      const customerName = job ? job.customer : (document.getElementById('inpCustomer') || {}).value;
+      const scoped = machineSerialsScopedTo(customerName, '');
+      const seen = new Set();
+      const ordered = [];
+      jobSerials.concat(scoped).forEach(s => {
+        const key = normalizeMatchText(s);
+        if (!s || seen.has(key)) return;
+        seen.add(key);
+        ordered.push(s);
+      });
+      dl.innerHTML = ordered.map(s => `<option value="${jobEsc(s)}">`).join('');
     }
 
     function startInspectionFromMachinePopup() {
@@ -3962,10 +4527,12 @@ const ICO = {
         endDate: document.getElementById('jobEndDate').value,
         po: document.getElementById('jobPO').value.trim(),
         so: document.getElementById('jobSO').value.trim(),
+        productionLine: (document.getElementById('jobProductionLine') || {}).value ? document.getElementById('jobProductionLine').value.trim() : '',
         status: document.getElementById('jobStatus').value || 'Planned',
         scope,
         machine: readJobMachine(),
         serials: jobSerialsDraft.slice(),
+        placeholderMachines: (jobPlaceholdersDraft || []).map(p => Object.assign({}, p)),
         notes: document.getElementById('jobNotes').value.trim(),
         updatedAt: new Date().toISOString()
       };
@@ -3990,6 +4557,17 @@ const ICO = {
         list.unshift(savedJob);
         editingJobId = newId;
         successCopy = 'Job saved';
+      }
+      // v157 fix (Phase 15B review, item 3): only now — the job is actually
+      // being saved — do queued "Fill in serial" placeholder conversions
+      // really happen (real machine record, reassigned references). A
+      // cancelled edit never reaches this line, so its queue (reset by
+      // initJobForm on the next edit) is simply discarded.
+      if (jobPendingPlaceholderConversions.length) {
+        jobPendingPlaceholderConversions.forEach(entry => {
+          convertPlaceholderToSerial(entry.placeholder, entry.serial);
+        });
+        jobPendingPlaceholderConversions = [];
       }
       // Phase 15A: resolve/stamp Customer, Site and Machine ids on every
       // real job save (not on load) — see resolveJobEquipmentSnapshot.
@@ -4505,6 +5083,16 @@ const ICO = {
       renderSection(true);
     }
 
+    // v157 (Phase 15B, item 1): customer suggestions merge past-inspection
+    // names with the Phase 15A Customer store, so a customer created only
+    // via a job (never yet inspected) still suggests.
+    function inspectionCustomerNames() {
+      const names = new Set();
+      try { loadInspections().forEach(i => i && i.customer && names.add(i.customer)); } catch (e) {}
+      try { (loadCustomers() || []).forEach(c => c && c.name && names.add(c.name)); } catch (e) {}
+      return [...names];
+    }
+
     function editInspectionMeta(id) {
       closeSearch();
       const list = loadInspections();
@@ -4520,8 +5108,8 @@ const ICO = {
       document.getElementById('inpDate').value = ins.date || new Date().toISOString().slice(0, 10);
       document.getElementById('inpPO').value = ins.po || '';
       // Autocomplete customers
-      const customers = [...new Set(list.map(i => i.customer).filter(Boolean))];
-      document.getElementById('customerList').innerHTML = customers.map(c => `<option value="${c}">`).join('');
+      document.getElementById('customerList').innerHTML = inspectionCustomerNames().map(c => `<option value="${jobEsc(c)}">`).join('');
+      fillInspectionSerialOptions(ins.jobId ? loadJobs().find(j => j.id === ins.jobId) : null);
       // Linked job chip
       linkedJobIdForStart = ins.jobId || null;
       fillInspectJobSelect(ins.jobId || '');
@@ -4562,10 +5150,19 @@ const ICO = {
       const group = document.getElementById('jobLinkGroup');
       if (group) group.classList.remove('hidden');
       // Autocomplete suggestions only (does not fill the fields)
-      const list = loadInspections();
-      const customers = [...new Set(list.map(i => i.customer).filter(Boolean))];
-      document.getElementById('customerList').innerHTML = customers.map(c => `<option value="${c}">`).join('');
+      document.getElementById('customerList').innerHTML = inspectionCustomerNames().map(c => `<option value="${jobEsc(c)}">`).join('');
+      fillInspectionSerialOptions(null);
     }
+    // v157 (Phase 15B, amendment D): keep serial suggestions on the start
+    // screen scoped to whatever's currently typed in Customer, same as the
+    // job form.
+    (function bindInspectCustomerScoping() {
+      const el = document.getElementById('inpCustomer');
+      if (el) el.addEventListener('input', () => {
+        const job = linkedJobIdForStart ? loadJobs().find(j => j.id === linkedJobIdForStart) : null;
+        fillInspectionSerialOptions(job);
+      });
+    })();
 
 
     document.getElementById('btnLoadExampleInspection').addEventListener('click', () => {
@@ -4826,12 +5423,41 @@ const ICO = {
     if (machineModal) machineModal.addEventListener('click', (e) => {
       if (e.target.id === 'machineModal') closeMachineModal();
     });
+    const genericTextCancel = document.getElementById('genericTextCancel');
+    if (genericTextCancel) genericTextCancel.addEventListener('click', closeGenericTextModal);
+    const genericTextSave = document.getElementById('genericTextSave');
+    if (genericTextSave) genericTextSave.addEventListener('click', () => {
+      const input = document.getElementById('genericTextInput');
+      const v = (input && input.value || '').trim();
+      const cb = genericTextPromptOnSave;
+      if (!v) return;
+      closeGenericTextModal();
+      if (cb) cb(v);
+    });
+    const genericTextModalEl = document.getElementById('genericTextModal');
+    if (genericTextModalEl) genericTextModalEl.addEventListener('click', (e) => {
+      if (e.target.id === 'genericTextModal') closeGenericTextModal();
+    });
     const addSerialBtn = document.getElementById('btnAddJobSerial');
     if (addSerialBtn) addSerialBtn.addEventListener('click', addJobSerialFromInput);
     const serialInp = document.getElementById('jobSerialInput');
     if (serialInp) serialInp.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); addJobSerialFromInput(); }
     });
+    // v157 (Phase 15B, amendment D): keep Site/Serial suggestions scoped to
+    // whatever's currently typed in Customer (and Site, for serials).
+    const jobCustomerInp = document.getElementById('jobCustomer');
+    if (jobCustomerInp) jobCustomerInp.addEventListener('input', () => {
+      const site = document.getElementById('jobSite');
+      fillJobSiteList(jobCustomerInp.value);
+      fillJobSerialList(jobCustomerInp.value, site ? site.value : '');
+    });
+    const jobSiteInp = document.getElementById('jobSite');
+    if (jobSiteInp) jobSiteInp.addEventListener('input', () => {
+      fillJobSerialList(jobCustomerInp ? jobCustomerInp.value : '', jobSiteInp.value);
+    });
+    const btnAddJobPlaceholder = document.getElementById('btnAddJobPlaceholder');
+    if (btnAddJobPlaceholder) btnAddJobPlaceholder.addEventListener('click', addJobPlaceholderMachine);
     const jobSerialSel = document.getElementById('inspectSerialSelect');
     if (jobSerialSel) {
       jobSerialSel.addEventListener('change', () => {
@@ -4843,7 +5469,18 @@ const ICO = {
         } else {
           custom.classList.add('hidden');
           custom.value = '';
+          syncInspectMachineFromSerial(jobSerialSel.value);
         }
+        updateJobMachineSummary();
+      });
+    }
+    const inspectSerialCustomInp = document.getElementById('inspectSerialInput');
+    if (inspectSerialCustomInp) {
+      // v157 fix (Phase 15B review, item 2): a typed ("Other") serial that
+      // turns out to already be a known machine should sync its type too —
+      // checked as the technician finishes typing, not on every keystroke.
+      inspectSerialCustomInp.addEventListener('blur', () => {
+        syncInspectMachineFromSerial(inspectSerialCustomInp.value);
         updateJobMachineSummary();
       });
     }
@@ -5256,6 +5893,43 @@ const ICO = {
       const list = (typeof getCurrentJobs === 'function') ? getCurrentJobs() : [];
       return (list && list[0]) || null;
     }
+    // v157 (Phase 15B, item 2 + amendment C): starts a Draft inspection
+    // straight away for a serial whose type is already confirmed — same
+    // record shape as startInspectionFromMachinePopup's job-linked branch,
+    // just without needing the machine modal first. The type used is
+    // always shown (see the inspectMachineBanner wiring in renderSection).
+    function beginInspectionForKnownMachine(job, serial, model) {
+      pendingInspectJobId = null;
+      machineModalMode = 'job';
+      currentInspection = null;
+      editingInspectionId = null;
+      results = {};
+      findings = [];
+      currentSectionIndex = 0;
+      if (typeof setActiveMachine === 'function') setActiveMachine(model);
+      currentInspection = {
+        id: newEntityId('ins'),
+        customer: job.customer || '',
+        model,
+        serial,
+        technician: job.technician || profileName() || '',
+        date: job.date || new Date().toISOString().slice(0, 10),
+        po: job.po || '',
+        jobId: job.id,
+        bakeryId: bakeryIdFromJob(job),
+        machineId: serial ? machineIdFromSerial(serial) : '',
+        status: 'Draft',
+        results: {},
+        findings: [],
+        currentSectionIndex: 0,
+        createdAt: new Date().toISOString()
+      };
+      saveCurrentDraft();
+      renderSection();
+      showScreen('screenInspect');
+      setHeader('Inspecting');
+      toast('Known serial — opened ' + model + ' checklist');
+    }
     function startInspectionForJob(job) {
       pendingInspectJobId = job ? job.id : null;
       currentInspection = null;
@@ -5267,6 +5941,20 @@ const ICO = {
       if (beginBtn) beginBtn.textContent = 'Begin Inspection';
       const delBtn = document.getElementById('btnDeleteInspection');
       if (delBtn) delBtn.classList.add('hidden');
+      // v157 (Phase 15B, item 2): a job with exactly one serial whose type
+      // has already been CONFIRMED by a past inspection skips the machine
+      // modal entirely — no type to ask about, no serial to pick between.
+      // A never-seen serial, or one whose type only ever came from a job
+      // field, still shows the modal below (pre-filled, one tap to
+      // confirm) — same as today.
+      const jobSerials = job ? normalizeJobSerials(Array.isArray(job.serials) ? job.serials : []) : [];
+      if (job && jobSerials.length === 1) {
+        const knownMachine = findMachineBySerial(jobSerials[0]);
+        if (knownMachine && knownMachine.machineTypeSource === 'inspection' && knownMachine.machineType) {
+          beginInspectionForKnownMachine(job, jobSerials[0], knownMachine.machineType);
+          return;
+        }
+      }
       if (job) applyJobToInspectionForm(job);
       else applyJobToInspectionForm(null);
       const model = (job && job.machine) || 'LX-8';
@@ -5282,6 +5970,9 @@ const ICO = {
       if (typeof populateInspectJobSelect === 'function') populateInspectJobSelect(job && job.id);
       if (typeof setInspectMachineFields === 'function') setInspectMachineFields(model);
       if (typeof populateJobSerialSelect === 'function') populateJobSerialSelect(jobSerialsDraft, jobSerialsDraft[0] || '');
+      // v157 fix (Phase 15B review, item 2): same pre-fill-from-serial rule
+      // as startInspectionForDetailJob above.
+      syncInspectMachineFromSerial(readJobSerial());
       openMachineModal();
       toast('Select a job, machine, and serial to start inspection');
     }
@@ -5311,11 +6002,26 @@ const ICO = {
       }).join('');
       if (current && sorted.some(j => String(j.id) === current)) sel.value = current;
     }
+    // v157 (Phase 15B, item 4): "<Customer> – <Production line>" when the
+    // job (or one of its machines) has one — still just a suggestion, the
+    // name box stays fully editable and blank otherwise, exactly as today.
+    function suggestedPunchlistName(job) {
+      if (!job || !job.customer) return '';
+      let prodLine = job.productionLine || '';
+      if (!prodLine && Array.isArray(job.equipmentIds) && job.equipmentIds.length) {
+        try {
+          const machines = loadMachines() || [];
+          const withLine = job.equipmentIds.map(id => machines.find(m => m && m.id === id)).find(m => m && m.productionLine);
+          if (withLine) prodLine = withLine.productionLine;
+        } catch (e) {}
+      }
+      return prodLine ? (job.customer + ' – ' + prodLine) : '';
+    }
     function openPunchlistStartSheet(job) {
       const sheet = document.getElementById('plStartSheet');
       if (!sheet) { toast('Punchlist sheet missing'); return; }
       const nameEl = document.getElementById('plStartName');
-      if (nameEl) nameEl.value = '';
+      if (nameEl) nameEl.value = suggestedPunchlistName(job);
       fillPunchlistStartJobSelect(job && job.id);
       sheet.classList.remove('hidden');
       sheet.classList.add('show');
@@ -5710,6 +6416,12 @@ const ICO = {
       document.getElementById('sectionCounter').textContent = `Section ${currentSectionIndex + 1} of ${APP_DATA.sections.length}`;
       document.getElementById('sectionName').textContent = section.section;
       renderSectionDots(!!isSectionChange);
+      // v157 (Phase 15B, amendment C): always visible, so an auto-picked
+      // machine type (Begin skipped the dropdown) is never a surprise.
+      const banner = document.getElementById('inspectMachineBanner');
+      if (banner && currentInspection) {
+        banner.textContent = [currentInspection.model, currentInspection.serial ? 'S/N ' + currentInspection.serial : ''].filter(Boolean).join(' · ');
+      }
 
       const items = getItemsForSection(section.section_id);
       const answered = items.filter(i => results[i.item_id]?.condition).length;
@@ -8659,7 +9371,7 @@ const IDB_NAME = "FieldPunchlistDB";
           <span class="pl-created-tag">${escapeHtml(stampDate(item.createdAt))}</span>
           <div class="list-item-main">
             <div class="title">${escapeHtml(item.description)}</div>
-            <div class="sub">${escapeHtml(item.line)} · ${escapeHtml(item.location)}${item.dueDate ? " · " + item.dueDate : ""}${item.responsible ? " · " + escapeHtml(item.responsible) : ""}</div>
+            <div class="sub">${escapeHtml((typeof equipmentExportLine === 'function' && equipmentExportLine(item)) || item.line || '')} · ${escapeHtml(item.location)}${item.dueDate ? " · " + item.dueDate : ""}${item.responsible ? " · " + escapeHtml(item.responsible) : ""}</div>
             <div class="action-line">→ ${escapeHtml(item.action)}</div>
             <span class="dept ${deptClass(item.department)}">${escapeHtml(item.department)}</span>
           </div>
@@ -8843,10 +9555,18 @@ const IDB_NAME = "FieldPunchlistDB";
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label>Line</label>
+            <label>Machine</label>
             <div class="line-chip-row" id="f-line-chips"></div>
+            <!-- v157 fix (Phase 15B review, item 1): f-line is kept ONLY so
+                 an old item's stored slot digit round-trips untouched when
+                 the item is edited for something unrelated (never read to
+                 identify a machine anywhere, form or export). Which chip is
+                 selected, and what actually gets saved, is driven entirely
+                 by f-serial / f-equipment-id below, set from the item's own
+                 saved serial/equipmentId — never from this digit. -->
             <input type="hidden" id="f-line" value="${escapeHtml(item.line || '')}">
             <input type="hidden" id="f-serial" value="${escapeHtml(item.serial || '')}">
+            <input type="hidden" id="f-equipment-id" value="${escapeHtml(item.equipmentId || '')}">
           </div>
           <div class="form-group">
             <label>Priority</label>
@@ -9032,54 +9752,139 @@ const IDB_NAME = "FieldPunchlistDB";
       } catch (e) {}
       return null;
     }
-    function serialForLine(line, job) {
-      const tagged = (typeof taggedJobSerials === 'function') ? taggedJobSerials(job && job.serials) : [];
-      const hit = tagged.find(t => String(t.line) === String(line));
-      return hit ? String(hit.serial) : '';
+    // v157 fix (Phase 15B review, item 1): builds the item form's machine
+    // options — exactly one per machine on the linked job (its real
+    // serials, plus any placeholders), a trailing "off list" entry for an
+    // existing item whose own serial isn't (or is no longer) among the
+    // job's current serials, and a "No machine" option. Never a fixed
+    // Line 1/2/3/4 set, so a job with any number of machines shows all of
+    // them and one with fewer never pads out fake slots.
+    function punchlistMachineOptions(job, currentSerial) {
+      const out = [];
+      const serials = (typeof taggedJobSerials === 'function') ? taggedJobSerials(job && job.serials) : [];
+      serials.forEach(t => {
+        const machine = findMachineBySerial(t.serial);
+        out.push({ kind: 'machine', serial: t.serial, machine, label: jobSerialChipSegments(t.serial, machine).join(' · ') });
+      });
+      (Array.isArray(job && job.placeholderMachines) ? job.placeholderMachines : []).forEach(ph => {
+        const label = [ph.lineLabel || '', 'Placeholder', ph.type || ''].filter(Boolean).join(' · ');
+        out.push({ kind: 'placeholder', id: ph.id, label });
+      });
+      const cur = String(currentSerial || '').trim();
+      if (cur && !out.some(o => o.kind === 'machine' && o.serial.toLowerCase() === cur.toLowerCase())) {
+        const machine = findMachineBySerial(cur);
+        out.push({ kind: 'machine', serial: cur, machine, label: jobSerialChipSegments(cur, machine).join(' · ') });
+      }
+      out.push({ kind: 'none', label: 'No machine' });
+      return out;
     }
     function bindPunchlistLineChips() {
       const row = document.getElementById('f-line-chips');
-      const hidden = document.getElementById('f-line');
       const hiddenSerial = document.getElementById('f-serial');
-      if (!row || !hidden) return;
+      const hiddenEquip = document.getElementById('f-equipment-id');
+      if (!row || !hiddenSerial) return;
       const job = punchlistLinkedJob();
-      const tagged = (typeof taggedJobSerials === 'function') ? taggedJobSerials(job && job.serials) : [];
-      const lines = ['1','2','3','4'];
-      let selected = String(hidden.value || '').trim();
-      if (selected && !lines.includes(selected)) selected = '';
-      function serialOf(line) {
-        const hit = tagged.find(t => t.line === line);
-        return hit ? String(hit.serial) : '';
+      const options = punchlistMachineOptions(job, hiddenSerial.value);
+      // Which option is selected comes ONLY from the item's own saved
+      // serial/equipmentId — never from item.line or sort position. A
+      // placeholder is matched by its id (its serials array is always
+      // empty, so it can only ever match this way); a real machine is
+      // matched by its serial text. No serial and no placeholder id means
+      // "No machine" — old items with a bare slot digit and no serial land
+      // here too, rather than guessing which machine they meant.
+      const equipVal = String(hiddenEquip.value || '').trim();
+      const serialVal = String(hiddenSerial.value || '').trim();
+      let selectedIdx = options.findIndex(o => o.kind === 'placeholder' && equipVal && o.id === equipVal);
+      if (selectedIdx < 0 && serialVal) {
+        selectedIdx = options.findIndex(o => o.kind === 'machine' && o.serial.toLowerCase() === serialVal.toLowerCase());
       }
-      if (hiddenSerial) hiddenSerial.value = selected ? serialOf(selected) : '';
+      // v157 fix (Phase 15B review round 2, item D): fall back to matching
+      // a real-machine chip by equipmentId — a converted-placeholder item
+      // is repointed at the real machine's id and (going forward) also
+      // gets its serial filled in, but this covers an item whose serial
+      // text is still empty for any other reason, so it isn't stranded on
+      // "No machine" when it actually has a real machine link.
+      if (selectedIdx < 0 && equipVal) {
+        selectedIdx = options.findIndex(o => o.kind === 'machine' && o.machine && o.machine.id === equipVal);
+      }
+      if (selectedIdx < 0) selectedIdx = options.findIndex(o => o.kind === 'none');
+      let setLineLink = document.getElementById('f-line-setlabel');
+      if (!setLineLink && row.parentNode) {
+        setLineLink = document.createElement('button');
+        setLineLink.type = 'button';
+        setLineLink.id = 'f-line-setlabel';
+        setLineLink.className = 'btn-link';
+        row.parentNode.insertBefore(setLineLink, row.nextSibling);
+      }
+      function selectOption(idx) {
+        selectedIdx = idx;
+        const opt = options[idx];
+        if (opt && opt.kind === 'machine') {
+          hiddenSerial.value = opt.serial;
+          hiddenEquip.value = '';
+        } else if (opt && opt.kind === 'placeholder') {
+          hiddenSerial.value = '';
+          hiddenEquip.value = opt.id;
+        } else {
+          hiddenSerial.value = '';
+          hiddenEquip.value = '';
+        }
+        paint();
+      }
       function paint() {
-        row.innerHTML = lines.map(line => {
-          const serial = serialOf(line);
-          // Label reads "Line 1", "Line 2", etc. — the stored value
-          // (data-line / f-line's hidden input) stays the bare number
-          // it always was, so this is display-only and doesn't touch
-          // existing saved items, the PDF export's line-grouping, or
-          // anything else that reads item.line.
-          const label = serial ? ('Line ' + line + ' · ' + serial) : ('Line ' + line);
-          return '<button type="button" class="chip line-chip' + (line === selected ? ' on' : '') + '" data-line="' + line + '" data-serial="' + serial.replace(/"/g,'&quot;') + '">' + label + '</button>';
+        row.innerHTML = options.map((opt, idx) => {
+          return '<button type="button" class="chip line-chip' + (idx === selectedIdx ? ' on' : '') + '" data-idx="' + idx + '">' + jobEsc(opt.label) + '</button>';
         }).join('');
         row.querySelectorAll('.line-chip').forEach(btn => {
           btn.addEventListener('click', () => {
-            const line = btn.getAttribute('data-line');
-            selected = (selected === line) ? '' : line;
-            hidden.value = selected;
-            if (hiddenSerial) hiddenSerial.value = selected ? serialOf(selected) : '';
-            paint();
+            const idx = Number(btn.getAttribute('data-idx'));
+            selectOption(idx === selectedIdx ? options.findIndex(o => o.kind === 'none') : idx);
           });
         });
+        // One-tap "set line" for the currently-selected real machine, only
+        // when it doesn't have a line label yet (roadmap 3.3's "one-tap
+        // correct-once action"). Not offered for a placeholder or "No
+        // machine".
+        const opt = options[selectedIdx];
+        if (setLineLink) {
+          if (opt && opt.kind === 'machine' && !(opt.machine && opt.machine.lineLabel)) {
+            const serial = opt.serial;
+            setLineLink.hidden = false;
+            setLineLink.textContent = 'Set line for ' + serial;
+            setLineLink.onclick = () => {
+              openGenericTextPrompt({
+                title: 'Set line',
+                label: 'Machine line label',
+                placeholder: 'e.g. Line 1',
+                value: '',
+                onSave: (v) => {
+                  const m = findOrCreateMachine(serial);
+                  if (m) setMachineLineLabel(m.id, v);
+                  paint();
+                }
+              });
+            };
+          } else {
+            setLineLink.hidden = true;
+          }
+        }
       }
       paint();
     }
 
     async function saveItem() {
+      // v157 fix (Phase 15B review, item 1): serial/equipmentId now come
+      // straight from the machine chip the technician actually tapped
+      // (bindPunchlistLineChips) — never re-derived from a slot number, so
+      // saving an item with no chip change can never move it onto a
+      // different machine just because the job's serial list changed.
+      // "line" itself is intentionally left OUT of formData: an existing
+      // item's stored slot digit is never touched by a save (the spread
+      // below keeps it exactly as it was); a new item simply has none.
+      const chipSerial = (document.getElementById("f-serial") && document.getElementById("f-serial").value.trim()) || "";
+      const chipEquipmentId = (document.getElementById("f-equipment-id") && document.getElementById("f-equipment-id").value.trim()) || "";
       const formData = {
-        line: document.getElementById("f-line").value.trim(),
-        serial: (document.getElementById("f-serial") && document.getElementById("f-serial").value.trim()) || serialForLine(document.getElementById("f-line").value.trim(), punchlistLinkedJob()) || "",
+        serial: chipSerial,
         location: document.getElementById("f-location").value.trim(),
         description: document.getElementById("f-description").value.trim(),
         action: document.getElementById("f-action").value.trim(),
@@ -9110,7 +9915,45 @@ const IDB_NAME = "FieldPunchlistDB";
         formData.equipmentId = '';
         if (formData.serial && typeof findOrCreateMachine === 'function') {
           const machine = findOrCreateMachine(formData.serial);
-          if (machine) formData.equipmentId = machine.id;
+          if (machine) {
+            formData.equipmentId = machine.id;
+            // v157 (Phase 15B, approved amendment A): snapshot the
+            // machine's line/production line/type/SO as of RIGHT NOW, so a
+            // later re-label or move never rewrites what this item's
+            // export already showed. Display/export code prefers this
+            // snapshot and only falls back to the live machine record for
+            // an item saved before this existed.
+            formData.lineLabelAtSave = machine.lineLabel || '';
+            formData.productionLineAtSave = machine.productionLine || '';
+            formData.machineTypeAtSave = machine.machineType || '';
+            formData.salesOrderAtSave = machine.salesOrder || '';
+          }
+        } else if (chipEquipmentId) {
+          // v157 fix (Phase 15B review, item 1): the technician picked a
+          // placeholder machine chip — it has no serial, so equipmentId is
+          // set directly from the chip rather than through findOrCreateMachine.
+          formData.equipmentId = chipEquipmentId;
+          const job2 = job;
+          const ph = (job2 && Array.isArray(job2.placeholderMachines)) ? job2.placeholderMachines.find(p => p && p.id === chipEquipmentId) : null;
+          if (ph) {
+            formData.lineLabelAtSave = ph.lineLabel || '';
+            formData.productionLineAtSave = ph.productionLine || '';
+            formData.machineTypeAtSave = ph.type || '';
+            formData.salesOrderAtSave = '';
+          }
+        } else {
+          // v157 fix (Phase 15B review round 2, item C): "No machine" was
+          // picked (no serial, no placeholder). Without this, editing an
+          // item that used to be on a machine back down to "No machine"
+          // left its old snapshot fields in place (the spread below only
+          // OVERWRITES keys formData actually has) — so the list/PDF/Excel
+          // kept showing the previous machine's line forever. Clearing
+          // them here means equipmentId, being '', has nothing to fall
+          // back to either.
+          formData.lineLabelAtSave = '';
+          formData.productionLineAtSave = '';
+          formData.machineTypeAtSave = '';
+          formData.salesOrderAtSave = '';
         }
       })();
 
@@ -10068,11 +10911,18 @@ const IDB_NAME = "FieldPunchlistDB";
         return 0;
       });
 
+      // v157 (Phase 15B, approved amendment E): the Line column now shows
+      // "<production line> · <machine line> · <serial>" when the item has
+      // that equipment info (from its own save-time snapshot, or the live
+      // machine record for older items) — no template/column changes,
+      // just richer text in the cell that was already there. An item with
+      // none of that (pre-15A data, or no serial ever entered) falls back
+      // to its bare stored line number exactly as before.
       const head = [['#', 'Line', 'Location', 'Description', 'Action', 'Department', 'Comments', 'Status']];
       const body = (items.length ? items : [{}]).map(function (item, idx) {
         return [
           idx + 1,
-          item.line || '',
+          (typeof equipmentExportLine === 'function' && equipmentExportLine(item)) || item.line || '',
           item.location || '',
           item.description || '',
           item.action || '',
@@ -10319,8 +11169,14 @@ const IDB_NAME = "FieldPunchlistDB";
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(7.5);
         doc.setTextColor(92, 101, 112);
-        const meta = [item.location, item.department, item.status].filter(Boolean).join('  ·  ');
-        doc.text(meta.substring(0, 90), L + 5, y + 13);
+        // v157 (Phase 15B, amendment E): production line/machine line/
+        // serial (and type/SO, since this meta line has room) alongside
+        // the fields already shown here — no layout change, just more
+        // text in the line that already existed.
+        const eq = (typeof equipmentDisplayFor === 'function') ? equipmentDisplayFor(item) : null;
+        const eqBits = eq ? [eq.productionLine, eq.lineLabel, eq.serial, eq.machineType, eq.salesOrder ? 'SO ' + eq.salesOrder : ''].filter(Boolean) : [];
+        const meta = eqBits.concat([item.location, item.department, item.status].filter(Boolean)).join('  ·  ');
+        doc.text(meta.substring(0, 110), L + 5, y + 13);
         doc.setTextColor(20, 20, 24);
         doc.setFontSize(9);
         let yy = y + 19;
@@ -10353,20 +11209,60 @@ const IDB_NAME = "FieldPunchlistDB";
       // report.
       const rank = (p) => { const v = String(p || '').toLowerCase(); return v === 'high' ? 2 : v === 'low' ? 0 : 1; };
 
-      // Grouped by line — a tech scanning the report for "what's left on
-      // Line 9" shouldn't have to read every card on the page. Items
-      // with no line entered fall into their own group at the end
-      // rather than being scattered in among the labeled ones.
+      // Grouped by MACHINE (equipmentId, falling back to the item's own
+      // serial for one saved before equipmentId existed) — a tech scanning
+      // the report for "what's left on Line 9" shouldn't have to read
+      // every card on the page. v157 fix (Phase 15B review, item 1): this
+      // used to group by the stored item.line slot digit, which silently
+      // reshuffled every time the job's serial list was edited (adding a
+      // lower serial could move an old item's card under a different
+      // machine's heading). Grouping by machine identity means the job's
+      // serial list can be edited at any time without it ever affecting
+      // where an already-saved item's card lands. Items with no machine
+      // fall into their own group at the end rather than being scattered
+      // in among the labeled ones.
       const NO_LINE = 'No line specified';
+      // v157 fix (Phase 15B review round 2, item B.2): the grouping key is
+      // now always resolved to ONE identity per machine, not whichever of
+      // equipmentId/serial the item happens to carry. An item with a
+      // serial groups by that serial's machine id (findMachineBySerial) —
+      // so two items on the same machine land together whether or not
+      // BOTH happen to be stamped with equipmentId yet (e.g. right after a
+      // restore, before every item has been re-saved). Only an item with
+      // no serial at all falls back to its own equipmentId, and only an
+      // item with neither falls into "No line specified".
+      function machineGroupKey(item) {
+        const serial = String((item && item.serial) || '').trim();
+        if (serial) {
+          const m = (typeof findMachineBySerial === 'function') ? findMachineBySerial(serial) : null;
+          if (m && m.id) return m.id;
+          return (typeof normalizeMatchText === 'function') ? normalizeMatchText(serial) : serial.toLowerCase();
+        }
+        return (item && item.equipmentId) ? String(item.equipmentId) : '';
+      }
       const groups = new Map();
       rawItems.forEach(item => {
-        const key = String(item.line || '').trim() || NO_LINE;
+        const key = machineGroupKey(item) || NO_LINE;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(item);
       });
+      // v157 (Phase 15B, amendment E): the group header shows the real
+      // machine's production line/line label/serial (taken from the
+      // group's own items, snapshot-first) — never a bare slot number.
+      function groupHeaderLabel(key) {
+        if (key === NO_LINE) return NO_LINE;
+        const groupItems = groups.get(key) || [];
+        const withEquipment = groupItems.find(it => (typeof equipmentExportLine === 'function') && equipmentExportLine(it));
+        if (withEquipment) return equipmentExportLine(withEquipment);
+        // No snapshot and no matching machine record (e.g. a serial that
+        // was typed but never resolved) — fall back to the item's own
+        // serial text rather than the internal grouping key.
+        const withSerial = groupItems.find(it => it && it.serial);
+        return (withSerial && withSerial.serial) || NO_LINE;
+      }
       const lineKeys = Array.from(groups.keys())
         .filter(k => k !== NO_LINE)
-        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+        .sort((a, b) => groupHeaderLabel(a).localeCompare(groupHeaderLabel(b), undefined, { numeric: true, sensitivity: 'base' }));
       if (groups.has(NO_LINE)) lineKeys.push(NO_LINE);
 
       if (!rawItems.length) {
@@ -10375,7 +11271,7 @@ const IDB_NAME = "FieldPunchlistDB";
         doc.text('No punchlist items to report.', L, y);
       } else {
         lineKeys.forEach(key => {
-          lineHeader(key === NO_LINE ? key : 'Line ' + key);
+          lineHeader(groupHeaderLabel(key));
           groups.get(key)
             .slice()
             .sort((a, b) => rank(b.priority) - rank(a.priority))
@@ -10427,7 +11323,11 @@ const IDB_NAME = "FieldPunchlistDB";
         const status = normStatus(item.status);
         const dept = String(item.department || "").trim();
         row.getCell(1).value = idx + 1;
-        row.getCell(2).value = item.line || "";
+        // v157 (Phase 15B, amendment E): richer text in the existing Line
+        // cell — "<production line> · <machine line> · <serial>" when
+        // known, same bare stored number as before otherwise. No template
+        // or column changes.
+        row.getCell(2).value = (typeof equipmentExportLine === 'function' && equipmentExportLine(item)) || item.line || "";
         row.getCell(3).value = item.location || "";
         row.getCell(4).value = item.description || "";
         row.getCell(5).value = item.action || "";

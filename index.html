@@ -33,7 +33,7 @@
       if(light)document.documentElement.classList.add('theme-light');
     }catch(e){}})();
   </script>
-  <link rel="stylesheet" href="app.css?v=156" />
+  <link rel="stylesheet" href="app.css?v=157" />
   
 
 
@@ -354,6 +354,14 @@
       <!-- Phase 7C (C4) — hidden unless a durable-persist failure was
            recently recorded; see refreshDurablePersistNotice(). -->
       <div class="storage-sub" id="durablePersistNotice" hidden style="margin-top:10px;">Backup storage write failed recently. Data is still on this phone; export a backup if you need a copy off-device.</div>
+    </div>
+    <!-- v157 (Phase 15B, item 8): informational only, no button. build.py
+         fills in the version number below when it builds index.html/app.js
+         (see build.py's version-placeholder substitution); it only ever
+         shows up unfilled here when app.html is opened directly (unbuilt)
+         rather than through the built app — see refreshAppVersionLine(). -->
+    <div class="storage-card" id="versionCard">
+      <div class="storage-sub" id="appVersionLine">Version 157</div>
     </div>
   </div>
 
@@ -719,16 +727,23 @@
         <input type="text" id="jobMachineCustom" class="hidden" placeholder="Machine type" autocomplete="off" style="margin-top:8px" />
       </div>
       <div class="form-group">
-        <label>Serials · auto-tagged Line 1, 2, 3…</label>
+        <label>Serials</label>
         <div id="jobSerialChips" class="job-serial-chips"></div>
         <div class="job-serial-add">
-          <input type="text" id="jobSerialInput" placeholder="Add serial number" autocomplete="off" />
+          <input type="text" id="jobSerialInput" placeholder="Add serial number" autocomplete="off" list="jobSerialAutocompleteList" />
+          <datalist id="jobSerialAutocompleteList"></datalist>
           <button type="button" class="btn btn-outline" id="btnAddJobSerial">Add</button>
         </div>
+        <button type="button" class="btn-link" id="btnAddJobPlaceholder">Serial not known yet? Add placeholder</button>
       </div>
       <div class="form-group">
         <label>Site / Plant</label>
-        <input type="text" id="jobSite" placeholder="Plant, line, or site name" />
+        <input type="text" id="jobSite" placeholder="Plant, line, or site name" list="jobSiteList" />
+        <datalist id="jobSiteList"></datalist>
+      </div>
+      <div class="form-group">
+        <label>Production line (optional)</label>
+        <input type="text" id="jobProductionLine" placeholder="e.g. Line 9" autocomplete="off" />
       </div>
       <div class="form-group">
         <label>Contact</label>
@@ -828,6 +843,10 @@
 
   <!-- SECTION NAV / INSPECTION SCREEN -->
   <div class="screen" id="screenInspect">
+    <!-- v157 (Phase 15B, amendment C): whenever Begin skips the machine-type
+         step for an already-confirmed serial, this makes clear which type
+         was used, without adding any tap. -->
+    <div style="padding:8px 16px 0;font-size:0.8rem;color:var(--muted)" id="inspectMachineBanner"></div>
     <div style="padding:12px 16px 0;display:flex;justify-content:space-between;align-items:center">
       <div>
         <div style="font-size:0.8rem;color:var(--muted)" id="sectionCounter">Section 1 of 12</div>
@@ -985,6 +1004,27 @@
       <div class="modal-actions">
         <button type="button" id="deleteModalCancel" class="btn btn-outline">Cancel</button>
         <button type="button" id="deleteModalConfirm" class="btn btn-delete">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- v157 (Phase 15B): one small reusable text-entry sheet, used for
+       "Set line", "Add placeholder machine", and "Fill in serial" — each a
+       single one-tap-then-type action, so a bespoke modal per action isn't
+       needed. See openGenericTextPrompt(). -->
+  <div id="genericTextModal" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal machine-sheet" role="dialog" aria-modal="true" aria-labelledby="genericTextTitle">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <div class="modal-header"><h2 id="genericTextTitle">Set line</h2></div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="genericTextInput" id="genericTextLabel">Line label</label>
+          <input type="text" id="genericTextInput" placeholder="" autocomplete="off" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="genericTextCancel" class="btn btn-outline">Cancel</button>
+        <button type="button" id="genericTextSave" class="btn btn-primary">Save</button>
       </div>
     </div>
   </div>
@@ -1166,8 +1206,8 @@
   
   
   
-  <script src="qrcode.min.js?v=156" defer></script>
-  <script src="templates.js?v=156" defer></script>
-  <script src="app.js?v=156" defer></script>
+  <script src="qrcode.min.js?v=157" defer></script>
+  <script src="templates.js?v=157" defer></script>
+  <script src="app.js?v=157" defer></script>
 </body>
 </html>
