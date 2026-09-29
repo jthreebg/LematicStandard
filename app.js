@@ -801,13 +801,22 @@ const ICO = {
       }
       // Header red glow only on home
       document.body.classList.toggle('on-home', id === 'screenHome');
-      document.body.classList.toggle('on-time', id === 'screenTime' || id === 'screenTimeEdit');
+      document.body.classList.toggle('on-time', id === 'screenTime');
+      document.body.classList.toggle('on-time-week', id === 'screenTimeWeek');
+      document.body.classList.toggle('on-time-edit', id === 'screenTimeEdit');
       document.body.classList.toggle('on-settings', id === 'screenSettings');
       document.body.classList.toggle('on-punchlist', id === 'screenPunchlist');
       document.body.classList.toggle('on-pl-edit', id === 'screenPunchlistEdit');
       document.body.classList.toggle('on-jobs-list', id === 'screenJobsList');
       document.body.classList.toggle('on-editor', id === 'screenEditor');
-      if (id !== 'screenEditor') document.body.classList.remove('on-editor');
+      if (id === 'screenHome') {
+        document.body.classList.remove(
+          'has-screen-back',
+          'on-time', 'on-time-week', 'on-time-edit',
+          'inspect-active', 'on-findings', 'on-inspect-notes', 'on-inspect-preview',
+          'on-editor', 'on-pl-edit', 'on-notes'
+        );
+      }
       // Show the global header back chevron on every navigable page.
       // Home, the Settings landing page, and the main Time Cards landing page
       // keep their existing header behavior; all other screens can now return
@@ -872,6 +881,7 @@ const ICO = {
 
     let editingPunchlistKey = '';
     let punchlistEditIsNew = false;
+    let punchlistSheetMode = 'new';
 
     function fillPunchlistEditJobSelect(selectedId) {
       const sel = document.getElementById('plEditJob');
@@ -900,28 +910,48 @@ const ICO = {
       if (current && sorted.some(j => String(j.id) === current)) sel.value = current;
     }
 
+    function configurePunchlistSheet(mode) {
+      punchlistSheetMode = mode === 'edit' ? 'edit' : 'new';
+      const title = document.getElementById('plStartTitle');
+      const done = document.getElementById('plStartDone');
+      const del = document.getElementById('plStartDelete');
+      if (title) title.textContent = punchlistSheetMode === 'edit' ? 'Edit punchlist' : 'New punchlist';
+      if (done) done.textContent = punchlistSheetMode === 'edit' ? 'Save' : 'Create punchlist';
+      if (del) del.classList.toggle('hidden', punchlistSheetMode !== 'edit');
+    }
+
     function openPunchlistEdit(key, opts) {
       opts = opts || {};
       punchlistEditIsNew = !!opts.isNew;
       editingPunchlistKey = key || '';
+      configurePunchlistSheet('edit');
       const heading = document.getElementById('plEditHeading');
-      if (heading) heading.textContent = punchlistEditIsNew ? 'New punchlist' : 'Edit punchlist';
-      const nameEl = document.getElementById('plEditName');
+      if (heading) heading.textContent = 'Edit punchlist';
       let currentName = (typeof punchlistDisplayName === 'function') ? punchlistDisplayName(key) : '';
       if (typeof isInternalId === 'function' && isInternalId(currentName)) currentName = '';
+      const nameEl = document.getElementById('plStartName') || document.getElementById('plEditName');
       if (nameEl) {
         nameEl.value = punchlistEditIsNew ? '' : currentName;
         nameEl.placeholder = 'Punchlist name';
       }
+      const fallbackName = document.getElementById('plEditName');
+      if (fallbackName && fallbackName !== nameEl) fallbackName.value = nameEl ? nameEl.value : currentName;
       let jobId = '';
       try {
         if (typeof window.getPunchlistJobId === 'function') jobId = window.getPunchlistJobId(key) || '';
       } catch (e) {}
       if (!jobId && opts.job && opts.job.id) jobId = opts.job.id;
+      fillPunchlistStartJobSelect(jobId);
       fillPunchlistEditJobSelect(jobId);
-      showScreen('screenPunchlistEdit');
-      setHeader('Punchlist');
-      document.body.classList.add('on-pl-edit');
+      const sheet = document.getElementById('plStartSheet');
+      if (sheet) {
+        sheet.classList.remove('hidden');
+        sheet.classList.add('show');
+        sheet.setAttribute('aria-hidden', 'false');
+      } else {
+        showScreen('screenPunchlistEdit');
+        document.body.classList.add('on-pl-edit');
+      }
       setTimeout(() => { try { if (nameEl) nameEl.focus(); } catch (e) {} }, 80);
     }
 
@@ -945,39 +975,40 @@ const ICO = {
     async function savePunchlistEdit() {
       const key = editingPunchlistKey;
       if (!key) { toast('Punchlist not found'); return; }
-      const nameEl = document.getElementById('plEditName');
+      const nameEl = document.getElementById('plStartName') || document.getElementById('plEditName');
       let name = ((nameEl && nameEl.value) || '').trim() || 'Punchlist';
       if (typeof isInternalId === 'function' && isInternalId(name)) { toast('Choose a different name'); return; }
-      const jobSel = document.getElementById('plEditJob');
+      const jobSel = document.getElementById('plStartJob') || document.getElementById('plEditJob');
       const jobId = jobSel ? jobSel.value : '';
       if (typeof window.updatePunchlistMeta !== 'function') { toast('Could not save'); return; }
       await window.updatePunchlistMeta(key, name, jobId);
       document.body.classList.remove('on-pl-edit');
       editingPunchlistKey = '';
       punchlistEditIsNew = false;
-      showScreen('screenPunchlist');
-      setHeader('Punchlist');
+      punchlistSheetMode = 'new';
+      if (typeof closePunchlistStartSheet === 'function') closePunchlistStartSheet();
+      const editScreen = document.getElementById('screenPunchlistEdit');
+      if (editScreen && editScreen.classList.contains('active')) {
+        showScreen('screenPunchlist');
+        setHeader('Punchlist');
+      }
       if (typeof populateJobSelect === 'function') populateJobSelect();
       if (typeof window.renderList === 'function') window.renderList();
+      if (typeof refreshPunchlistHome === 'function') refreshPunchlistHome();
       toast('Saved ' + name);
     }
 
     function cancelPunchlistEdit() {
       document.body.classList.remove('on-pl-edit');
-      const wasNew = punchlistEditIsNew;
       punchlistEditIsNew = false;
       editingPunchlistKey = '';
-      if (wasNew) {
-        if (typeof openPunchlistRecentList === 'function') openPunchlistRecentList();
-        else {
-          showScreen('screenPunchlistList');
-          setHeader('Punchlist');
-          if (typeof refreshPunchlistHome === 'function') refreshPunchlistHome();
-        }
-        return;
+      punchlistSheetMode = 'new';
+      if (typeof closePunchlistStartSheet === 'function') closePunchlistStartSheet();
+      const editScreen = document.getElementById('screenPunchlistEdit');
+      if (editScreen && editScreen.classList.contains('active')) {
+        showScreen('screenPunchlist');
+        setHeader('Punchlist');
       }
-      showScreen('screenPunchlist');
-      setHeader('Punchlist');
     }
 
     let linkingPunchlistName = '';
@@ -1104,6 +1135,20 @@ const ICO = {
       container.innerHTML = `<div class="empty-state"><div class="icon"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4.2" y="3.2" width="15.6" height="17.6" rx="2.2" stroke="currentColor" stroke-width="1.2"/><path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></div><p>No punchlists yet.<br>Tap “+ Punchlist” to begin.</p></div>`;
     }
 
+    function formatAppDate(v) {
+      if (v == null || v === '') return '';
+      const s = String(v).trim();
+      const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+      let d = null;
+      if (m) d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      else {
+        const t = Date.parse(s);
+        if (!isNaN(t)) d = new Date(t);
+      }
+      if (!d || isNaN(d.getTime())) return s;
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return months[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+    }
     function formatJobDateRange(job) {
       const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
       const parse = (v) => {
@@ -3373,14 +3418,22 @@ const ICO = {
           </div>
           <div class="pf-right-rail">
             ${p.urgent ? '<span class="badge badge-urgent pf-rail-urgent">Urgent</span>' : ''}
-            ${p.photoThumb ? `<img class="pf-rail-photo" src="${p.photoThumb}" alt="Part photo">` : ''}
+            ${p.photoThumb ? `<img class="pf-rail-photo" src="${p.photoThumb}" alt="Part photo" data-line-photo="${p.id}">` : ''}
           </div>
         </div>`).join('');
         listEl.querySelectorAll('[data-line-id]').forEach(el => {
           el.addEventListener('click', (ev) => {
             if (typeof window.swipeIgnoreClicksUntil === 'number' && Date.now() < window.swipeIgnoreClicksUntil) return;
             if (ev.currentTarget.closest && ev.currentTarget.closest('.swipe-host.swipe-open')) return;
+            if (ev.target && ev.target.closest && ev.target.closest('.pf-rail-photo')) return;
             openPartsLineModal(el.getAttribute('data-line-id'));
+          });
+        });
+        listEl.querySelectorAll('.pf-rail-photo').forEach(img => {
+          img.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            openPartsRequestPhoto(ev, img.getAttribute('data-line-photo'), img.src);
           });
         });
         if (typeof bindSwipeToDelete === 'function') {
@@ -3420,6 +3473,7 @@ const ICO = {
       if (line.photoThumb) { thumb.src = line.photoThumb; thumb.classList.remove('hidden'); }
       else { thumb.src = ''; thumb.classList.add('hidden'); }
       window.__partsLineDraftPhoto = { photoId: line.photoId, photoThumb: line.photoThumb };
+      bindPartsLinePhotoPreview();
       clearMissingFlag(document.getElementById('plineDesc')); // v152 (Phase 12A Fix 5)
       refreshPartsLineRequired();
       document.getElementById('partsLineModal').classList.add('show');
@@ -3437,6 +3491,76 @@ const ICO = {
       document.getElementById('partsLineModal').classList.remove('show');
       partsLineEditingId = null;
     }
+    function bindPartsLinePhotoPreview() {
+      const thumb = document.getElementById('plinePhotoPreview');
+      if (!thumb || thumb.dataset.viewerBound === '1') return;
+      thumb.dataset.viewerBound = '1';
+      thumb.addEventListener('click', (ev) => {
+        if (!thumb.src || thumb.classList.contains('hidden')) return;
+        openPartsRequestPhoto(ev, partsLineEditingId || 'draft', thumb.src);
+      });
+    }
+    async function openPartsRequestPhoto(ev, lineId, fallbackSrc) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      let src = fallbackSrc || '';
+      const line = (lineId && lineId !== 'draft' && partsFormDraft)
+        ? (partsFormDraft.parts || []).find(p => String(p.id) === String(lineId))
+        : null;
+      const photoId = (line && line.photoId) || (window.__partsLineDraftPhoto && window.__partsLineDraftPhoto.photoId);
+      if (photoId && typeof STORE !== 'undefined' && typeof STORE.getPhoto === 'function') {
+        try {
+          const rec = await STORE.getPhoto(photoId);
+          if (rec && rec.blob && typeof blobToObjectUrl === 'function') src = blobToObjectUrl(rec.blob);
+        } catch (e) {}
+      }
+      if (!src && line && line.photoThumb) src = line.photoThumb;
+      if (!src) return;
+      window.__partsPhotoLineId = lineId || 'draft';
+      if (typeof openPhotoViewer === 'function') openPhotoViewer(src, 'parts', lineId || 'draft');
+    }
+    function requestDeletePartsPhoto(ev) {
+      if (ev) ev.stopPropagation();
+      const id = window.__partsPhotoLineId || partsLineEditingId || 'parts-photo';
+      if (typeof showDeleteConfirm === 'function') {
+        showDeleteConfirm(id, 'parts-photo', 'Delete photo?', 'This photo will be removed from the part.');
+      }
+    }
+    function performDeletePartsPhoto() {
+      const lineId = window.__partsPhotoLineId;
+      let photoId = null;
+      if (partsFormDraft && lineId && lineId !== 'draft' && lineId !== 'parts-photo') {
+        const line = (partsFormDraft.parts || []).find(p => String(p.id) === String(lineId));
+        if (line) {
+          photoId = line.photoId || null;
+          line.photoId = null;
+          line.photoThumb = '';
+        }
+      }
+      const editingThis = !lineId || lineId === 'draft' || lineId === 'parts-photo' || String(partsLineEditingId) === String(lineId);
+      if (editingThis && window.__partsLineDraftPhoto) {
+        if (!photoId) photoId = window.__partsLineDraftPhoto.photoId || null;
+        window.__partsLineDraftPhoto = { photoId: null, photoThumb: '' };
+        const thumb = document.getElementById('plinePhotoPreview');
+        if (thumb) {
+          thumb.src = '';
+          thumb.classList.add('hidden');
+        }
+      }
+      if (photoId && typeof STORE !== 'undefined' && typeof STORE.deletePhotos === 'function') {
+        STORE.deletePhotos([photoId]).catch(() => {});
+      }
+      if (partsFormDraft && typeof savePartsFormDraft === 'function') savePartsFormDraft(false);
+      if (typeof renderPartsForm === 'function') renderPartsForm();
+      if (typeof closePunchlistPhoto === 'function') closePunchlistPhoto();
+      if (typeof closeDeleteModal === 'function') closeDeleteModal();
+      toast('Photo deleted');
+    }
+    window.openPartsRequestPhoto = openPartsRequestPhoto;
+    window.requestDeletePartsPhoto = requestDeletePartsPhoto;
+    window.performDeletePartsPhoto = performDeletePartsPhoto;
     function savePartsLineModal() {
       const description = document.getElementById('plineDesc').value.trim();
       const qty = parseInt(document.getElementById('plineQty').value, 10) || 1;
@@ -4032,7 +4156,7 @@ const ICO = {
           <span class="job-serial-text">${jobEsc(serial)}</span>
           ${typeHtml}
           ${lineHtml}
-          <button type="button" class="job-serial-chip job-serial-remove" data-idx="${i}" aria-label="Remove">×</button>
+          <button type="button" class="btn-link job-serial-remove" data-idx="${i}" aria-label="Remove">Remove</button>
         </div>`;
       });
       const placeholderRows = jobPlaceholdersDraft.map((ph, i) => {
@@ -4042,7 +4166,7 @@ const ICO = {
           <button type="button" class="btn-link job-serial-type-btn" data-kind="placeholder" data-idx="${i}">${jobEsc(ph.type || 'Set type')}</button>
           ${lineHtml}
           <button type="button" class="btn-link job-fill-serial" data-idx="${i}">Fill in serial</button>
-          <button type="button" class="job-serial-chip job-placeholder-remove" data-idx="${i}" aria-label="Remove">×</button>
+          <button type="button" class="btn-link job-placeholder-remove" data-idx="${i}" aria-label="Remove">Remove</button>
         </div>`;
       });
       wrap.innerHTML = realRows.join('') + placeholderRows.join('');
@@ -4474,6 +4598,44 @@ const ICO = {
 
     let detailJobId = null;
 
+    const JD_ACC_KEY = 'lx8_jd_acc';
+    const JD_ACC_DEFAULTS = { inspect: true, punch: true, time: true, parts: true };
+    function loadJdAccState() {
+      const saved = lsRead(JD_ACC_KEY, null);
+      return Object.assign({}, JD_ACC_DEFAULTS, (saved && typeof saved === 'object') ? saved : {});
+    }
+    function saveJdAccState(state) {
+      lsWrite(JD_ACC_KEY, state);
+    }
+    function applyJdAccState() {
+      const state = loadJdAccState();
+      document.querySelectorAll('#screenJobDetail .jd-acc[data-jd-acc]').forEach((acc) => {
+        const key = acc.getAttribute('data-jd-acc');
+        const open = state[key] !== false;
+        acc.classList.toggle('open', open);
+        const btn = acc.querySelector('.jd-acc-toggle');
+        if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+    }
+    function bindJdAccordions() {
+      document.querySelectorAll('#screenJobDetail .jd-acc-toggle').forEach((btn) => {
+        if (btn.dataset.bound === '1') return;
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', () => {
+          const acc = btn.closest('.jd-acc');
+          if (!acc) return;
+          const key = acc.getAttribute('data-jd-acc');
+          const open = !acc.classList.contains('open');
+          acc.classList.toggle('open', open);
+          btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+          if (!key) return;
+          const state = loadJdAccState();
+          state[key] = open;
+          saveJdAccState(state);
+        });
+      });
+    }
+
     function openJobDetail(id) {
       const job = loadJobs().find(j => j.id === id);
       if (!job) { toast('Job not found'); return; }
@@ -4493,6 +4655,8 @@ const ICO = {
       detailJobId = id;
       showScreen('screenJobDetail');
       setHeader('Job');
+      bindJdAccordions();
+      applyJdAccState();
       refreshJobDetail();
     }
 
@@ -4734,7 +4898,9 @@ const ICO = {
       editingJobId = id;
       detailJobId = id;
       initJobForm(job);
-      document.getElementById('btnSaveJob').textContent = 'Save Job';
+      document.getElementById('btnSaveJob').textContent = 'Save';
+      const jobFormTitle = document.getElementById('jobFormTitle');
+      if (jobFormTitle) jobFormTitle.textContent = 'Edit Job';
       document.getElementById('btnDeleteJob').classList.remove('hidden');
       showScreen('screenJobForm');
       setHeader('Edit Job');
@@ -4910,7 +5076,9 @@ const ICO = {
     function openNewJob() {
       editingJobId = null;
       initJobForm(null);
-      document.getElementById('btnSaveJob').textContent = 'Save Job';
+      document.getElementById('btnSaveJob').textContent = 'Save';
+      const jobFormTitle = document.getElementById('jobFormTitle');
+      if (jobFormTitle) jobFormTitle.textContent = 'New Job';
       document.getElementById('btnDeleteJob').classList.add('hidden');
       showScreen('screenJobForm');
       setHeader('New Job');
@@ -5495,6 +5663,11 @@ const ICO = {
       };
       if (kind === 'job') run(window.performDeleteJob || performDeleteJob, id);
       else if (kind === 'punchlist-item') run(window.performDeletePunchlistItem || performDeletePunchlistItem, id);
+      else if (kind === 'punchlist-item-unsaved') {
+        if (typeof closeModal === 'function') closeModal();
+        closeDeleteModal();
+        toast('Item discarded');
+      }
       else if (kind === 'punchlist-photo') {
         const fn = window.removePhoto || removePhoto;
         if (typeof fn === 'function') fn();
@@ -5505,6 +5678,7 @@ const ICO = {
       else if (kind === 'punchlist') run(window.performDeletePunchlist || performDeletePunchlist, id);
       else if (kind === 'parts-request') run(window.performDeletePartsRequest || performDeletePartsRequest, id);
       else if (kind === 'parts-line') run(window.performDeletePartsLine || performDeletePartsLine, id);
+      else if (kind === 'parts-photo') run(window.performDeletePartsPhoto || performDeletePartsPhoto, id);
       else if (kind === 'timecard') run(window.performDeleteTimecard, id);
       else if (kind === 'inspect-photo') run(window.performDeleteInspectPhoto || performDeleteInspectPhoto, id);
       else if (kind === 'sample-data') run(performRemoveSampleData, id); // v152 (Phase 12A Fix 6)
@@ -6510,6 +6684,9 @@ const ICO = {
     function openPunchlistStartSheet(job) {
       const sheet = document.getElementById('plStartSheet');
       if (!sheet) { toast('Punchlist sheet missing'); return; }
+      editingPunchlistKey = '';
+      punchlistEditIsNew = true;
+      configurePunchlistSheet('new');
       const nameEl = document.getElementById('plStartName');
       if (nameEl) nameEl.value = suggestedPunchlistName(job);
       fillPunchlistStartJobSelect(job && job.id);
@@ -6523,8 +6700,17 @@ const ICO = {
       sheet.classList.add('hidden');
       sheet.classList.remove('show');
       sheet.setAttribute('aria-hidden', 'true');
+      if (punchlistSheetMode === 'edit') {
+        editingPunchlistKey = '';
+        punchlistEditIsNew = false;
+      }
+      configurePunchlistSheet('new');
     }
     async function confirmPunchlistStart() {
+      if (punchlistSheetMode === 'edit' && editingPunchlistKey) {
+        await savePunchlistEdit();
+        return;
+      }
       const nameEl = document.getElementById('plStartName');
       let name = ((nameEl && nameEl.value) || '').trim() || 'Punchlist';
       if (typeof isInternalId === 'function' && isInternalId(name)) { toast('Choose a different name'); return; }
@@ -6566,6 +6752,14 @@ const ICO = {
       if (delPl && delPl.dataset.bound !== '1') {
         delPl.dataset.bound = '1';
         delPl.addEventListener('click', (e) => {
+          e.preventDefault();
+          requestDeletePunchlist();
+        });
+      }
+      const delStart = document.getElementById('plStartDelete');
+      if (delStart && delStart.dataset.bound !== '1') {
+        delStart.dataset.bound = '1';
+        delStart.addEventListener('click', (e) => {
           e.preventDefault();
           requestDeletePunchlist();
         });
@@ -9870,10 +10064,10 @@ const IDB_NAME = "FieldPunchlistDB";
         else if (pri === "high" || pri === "critical") classes.push("priority-high");
         return `
         <div class="${classes.join(" ")}" data-id="${item.id}" onclick="toggleItem('${item.id}', event)">
-          <span class="pl-created-tag">${escapeHtml(stampDate(item.createdAt))}</span>
+          <span class="pl-created-tag">${escapeHtml((typeof formatAppDate === 'function' ? formatAppDate(item.createdAt) : stampDate(item.createdAt)))}</span>
           <div class="list-item-main">
             <div class="title">${escapeHtml(item.description)}</div>
-            <div class="sub">${escapeHtml((typeof equipmentExportLine === 'function' && equipmentExportLine(item)) || item.line || '')} · ${escapeHtml(item.location)}${item.dueDate ? " · " + item.dueDate : ""}${item.responsible ? " · " + escapeHtml(item.responsible) : ""}</div>
+            <div class="sub">${escapeHtml((typeof equipmentExportLine === 'function' && equipmentExportLine(item)) || item.line || '')} · ${escapeHtml(item.location)}${item.dueDate ? " · " + (typeof formatAppDate === 'function' ? formatAppDate(item.dueDate) : item.dueDate) : ""}${item.responsible ? " · " + escapeHtml(item.responsible) : ""}</div>
             <div class="action-line">→ ${escapeHtml(item.action)}</div>
             <span class="dept ${deptClass(item.department)}">${escapeHtml(item.department)}</span>
           </div>
@@ -9884,7 +10078,7 @@ const IDB_NAME = "FieldPunchlistDB";
           <div class="list-item-detail">
             ${item.comments ? `<div class="detail-row"><strong>Comments</strong>${escapeHtml(item.comments)}</div>` : ""}
             ${item.responsible ? `<div class="detail-row"><strong>Responsible</strong>${escapeHtml(item.responsible)}</div>` : ""}
-            ${item.dueDate ? `<div class="detail-row"><strong>Due</strong>${escapeHtml(item.dueDate)}</div>` : ""}
+            ${item.dueDate ? `<div class="detail-row"><strong>Due</strong>${escapeHtml((typeof formatAppDate === 'function' ? formatAppDate(item.dueDate) : item.dueDate))}</div>` : ""}
             ${/* v156: a second full-size copy of the photo used to be placed here too. This expanded-detail panel is never opened by any code (nothing adds the "expanded" class to punchlist rows), so that copy was pure cost: every photo was loaded twice per render. The thumbnail above is the one people see and tap. */ ""}
 
           </div>
@@ -9940,6 +10134,10 @@ const IDB_NAME = "FieldPunchlistDB";
       if (ev) ev.stopPropagation();
       if (photoViewerMode === 'inspect') {
         requestDeleteInspectPhoto(ev);
+        return;
+      }
+      if (photoViewerMode === 'parts') {
+        requestDeletePartsPhoto(ev);
         return;
       }
       if (typeof requestDeletePunchlistPhoto === 'function') requestDeletePunchlistPhoto(ev);
@@ -10524,18 +10722,32 @@ const IDB_NAME = "FieldPunchlistDB";
     function deleteItem(id) {
       const targetId = (id !== undefined && id !== null && id !== "") ? id : editingId;
       if (targetId === undefined || targetId === null || targetId === "") {
-        closeModal();
-        toast("Item discarded");
+        // Unsaved draft — still confirm before discarding so Delete
+        // never silently drops work, same pattern as saved items.
+        if (typeof showDeleteConfirm === 'function') {
+          showDeleteConfirm('__pl_unsaved__', 'punchlist-item-unsaved', 'Discard item?', 'This item has not been saved and will be discarded.');
+        } else {
+          closeModal();
+          toast("Item discarded");
+        }
+        return;
+      }
+      if (typeof showDeleteConfirm === 'function') {
+        showDeleteConfirm(targetId, 'punchlist-item', 'Delete item?', 'This punchlist item will be permanently deleted.');
         return;
       }
       pendingDeleteId = targetId;
       pendingDeleteKind = "punchlist-item";
-      document.getElementById("deleteModalTitle").textContent = "Delete item?";
-      document.getElementById("deleteModalLabel").textContent =
-        "This punchlist item will be permanently deleted.";
+      const titleEl = document.getElementById("deleteModalTitle");
+      const labelEl = document.getElementById("deleteModalLabel");
       const modal = document.getElementById("deleteModal");
+      if (titleEl) titleEl.textContent = "Delete item?";
+      if (labelEl) labelEl.textContent = "This punchlist item will be permanently deleted.";
+      if (!modal) { toast('Delete dialog missing'); return; }
       modal.classList.remove("hidden");
       modal.classList.add("show");
+      modal.style.display = 'flex';
+      modal.style.zIndex = '30000';
       modal.setAttribute("aria-hidden", "false");
     }
 
@@ -10808,6 +11020,10 @@ const IDB_NAME = "FieldPunchlistDB";
       }
       await plSaveData();
       if (typeof closeDeleteModal === 'function') closeDeleteModal();
+      if (typeof closePunchlistStartSheet === 'function') closePunchlistStartSheet();
+      document.body.classList.remove('on-pl-edit');
+      editingPunchlistKey = '';
+      punchlistEditIsNew = false;
       toast('Punchlist deleted');
       if (typeof populateJobSelect === 'function') populateJobSelect();
       if (typeof openPunchlistRecentList === 'function') openPunchlistRecentList();
@@ -12750,6 +12966,18 @@ function tcRenderEntryList(listEl, offset) {
       sheet.hidden = false;
       sheet.removeAttribute('hidden');
       sheet.classList.add('show');
+      const scrollThisWeekIntoMiddle = () => {
+        const target = list.querySelector('.tc-week-pick-item[data-offset="0"]');
+        if (!target || !list.clientHeight) return;
+        const top = target.offsetTop - (list.clientHeight / 2) + (target.offsetHeight / 2);
+        list.scrollTop = Math.max(0, top);
+      };
+      requestAnimationFrame(() => {
+        scrollThisWeekIntoMiddle();
+        requestAnimationFrame(scrollThisWeekIntoMiddle);
+      });
+      setTimeout(scrollThisWeekIntoMiddle, 60);
+      setTimeout(scrollThisWeekIntoMiddle, 320);
     }
 
     function tcOpenWeek(offset) {

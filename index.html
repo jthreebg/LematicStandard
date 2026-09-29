@@ -33,7 +33,7 @@
       if(light)document.documentElement.classList.add('theme-light');
     }catch(e){}})();
   </script>
-  <link rel="stylesheet" href="app.css?v=160" />
+  <link rel="stylesheet" href="app.css?v=168" />
   
 
 
@@ -387,7 +387,6 @@
 
   <div id="edPinSheet" class="save-sheet" hidden>
     <div class="save-sheet-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
       <div style="padding:4px 8px 8px;text-align:center;">
         <div class="ed-card-kicker" id="edPinKicker">Manager PIN</div>
         <div style="font-size:1.05rem;font-weight:650;margin:6px 0 8px;" id="edPinTitle">Enter PIN</div>
@@ -408,7 +407,6 @@
 
   <div id="edPreviewSheet" class="save-sheet" hidden>
     <div class="save-sheet-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
       <div class="modal-header" style="padding:4px 8px 8px;">
         <h2 id="edPreviewTitle">Confirm change</h2>
       </div>
@@ -420,7 +418,6 @@
 
   <div id="edFormSheet" class="save-sheet" hidden>
     <div class="save-sheet-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
       <div class="modal-header" style="padding:4px 8px 8px;">
         <h2 id="edFormTitle">Edit</h2>
       </div>
@@ -432,7 +429,6 @@
 
   <div id="edBackupAskSheet" class="save-sheet" hidden>
     <div class="save-sheet-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
       <div style="padding:4px 8px 12px;text-align:center;">
         <div class="ed-card-kicker">Before the first edit</div>
         <div style="font-size:1.05rem;font-weight:650;margin:6px 0 8px;">Backup this phone?</div>
@@ -446,7 +442,6 @@
 
   <div class="modal-overlay" id="punchlistDiagModal" hidden aria-hidden="true">
     <div class="modal" id="punchlistDiagSheet">
-      <div class="modal-handle" aria-hidden="true"></div>
       <div class="modal-header">
         <h2>Punchlists Needing Review</h2>
         <button type="button" class="header-btn" id="punchlistDiagClose" title="Close" aria-label="Close">
@@ -601,12 +596,12 @@
         <div class="home-tile-title">+ Parts Request</div>
         <span id="jdPartsCount" class="hidden">None yet</span>
       </button>
-      <button type="button" class="home-tile" id="jdHoursTile" style="grid-column:1/-1;">
+      <button type="button" class="home-tile" id="jdHoursTile">
         <div class="home-tile-icon" aria-hidden="true">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="0.9"/><path d="M12 7.5v5l3.2 2" stroke="currentColor" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </div>
         <div class="home-tile-title">Time Cards</div>
-        <span id="jdHoursValue">0.00 h</span>
+        <span id="jdHoursValue" class="hidden">0.00 h</span>
       </button>
     </div>
 
@@ -624,33 +619,61 @@
       <div class="jd-notes-text hidden" id="jdNotes"></div>
     </div>
 
-    <div class="jd-section-label jd-section-pad">Inspections</div>
-    <div class="card job-detail-list-card">
-      <div id="jobDetailInspectList">
-        <div class="empty-state compact"><p>No inspections linked yet.</p></div>
+    <section class="jd-acc open" data-jd-acc="inspect">
+      <button type="button" class="jd-acc-toggle" aria-expanded="true" aria-controls="jobDetailInspectList">
+        <span class="jd-section-label">Inspections</span>
+        <svg class="jd-acc-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="jd-acc-body">
+        <div class="card job-detail-list-card">
+          <div id="jobDetailInspectList">
+            <div class="empty-state compact"><p>No inspections linked yet.</p></div>
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
 
-    <div class="jd-section-label jd-section-pad">Punchlist</div>
-    <div class="card job-detail-list-card">
-      <div id="jobDetailPunchList">
-        <div class="empty-state compact"><p>No punchlist for this job yet.</p></div>
+    <section class="jd-acc open" data-jd-acc="punch">
+      <button type="button" class="jd-acc-toggle" aria-expanded="true" aria-controls="jobDetailPunchList">
+        <span class="jd-section-label">Punchlist</span>
+        <svg class="jd-acc-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="jd-acc-body">
+        <div class="card job-detail-list-card">
+          <div id="jobDetailPunchList">
+            <div class="empty-state compact"><p>No punchlist for this job yet.</p></div>
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
 
-    <div class="jd-section-label jd-section-pad">Time cards</div>
-    <div class="card job-detail-list-card">
-      <div id="jobDetailTimeList">
-        <div class="empty-state compact"><p>No time cards linked to this job yet.</p></div>
+    <section class="jd-acc open" data-jd-acc="time">
+      <button type="button" class="jd-acc-toggle" aria-expanded="true" aria-controls="jobDetailTimeList">
+        <span class="jd-section-label">Time cards</span>
+        <svg class="jd-acc-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="jd-acc-body">
+        <div class="card job-detail-list-card">
+          <div id="jobDetailTimeList">
+            <div class="empty-state compact"><p>No time cards linked to this job yet.</p></div>
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
 
-    <div class="jd-section-label jd-section-pad">Parts Requests</div>
-    <div class="card job-detail-list-card">
-      <div id="jobDetailPartsList">
-        <div class="empty-state compact"><p>No parts requests for this job yet.</p></div>
+    <section class="jd-acc open" data-jd-acc="parts">
+      <button type="button" class="jd-acc-toggle" aria-expanded="true" aria-controls="jobDetailPartsList">
+        <span class="jd-section-label">Parts Requests</span>
+        <svg class="jd-acc-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="jd-acc-body">
+        <div class="card job-detail-list-card">
+          <div id="jobDetailPartsList">
+            <div class="empty-state compact"><p>No parts requests for this job yet.</p></div>
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
   </div>
 
   <!-- PARTS REQUESTS LIST -->
@@ -726,7 +749,6 @@
   <!-- PARTS LINE — add/edit one part (mirrors #pl-modal's sliding-sheet pattern) -->
   <div class="modal-overlay" id="partsLineModal">
     <div class="modal" id="partsLineModalSheet">
-      <div class="modal-handle" aria-hidden="true"></div>
       <div class="modal-header">
         <h2 id="plineTitle">Add part</h2>
         <button type="button" class="btn-edit urgent-toggle" id="btnLineUrgent">Urgent</button>
@@ -767,7 +789,6 @@
   <!-- PARTS REQUEST — SHARE FALLBACK (Web Share unavailable) -->
   <div id="partsShareSheet" class="save-sheet" hidden>
     <div class="save-sheet-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
       <div class="parts-share-head">
         <div class="parts-share-eyebrow">Sharing isn't available on this browser</div>
         <div class="parts-share-title">Copy the request instead</div>
@@ -782,6 +803,12 @@
 
   <!-- NEW / EDIT JOB SCREEN -->
   <div class="screen" id="screenJobForm">
+    <div class="list-page-head">
+      <div>
+        <div class="list-page-kicker">Job</div>
+        <h2 id="jobFormTitle">New Job</h2>
+      </div>
+    </div>
     <div class="card">
       <div class="form-group">
         <div class="card-label-row">
@@ -807,7 +834,7 @@
           <datalist id="jobSerialAutocompleteList"></datalist>
           <button type="button" class="btn btn-outline" id="btnAddJobSerial">Add</button>
         </div>
-        <button type="button" class="btn-link" id="btnAddJobPlaceholder">Serial not known yet? Add placeholder</button>
+        <button type="button" class="btn-link" id="btnAddJobPlaceholder">+ Placeholder machine</button>
       </div>
       <div class="form-group">
         <label>Site / Plant</label>
@@ -867,7 +894,7 @@
     <button type="button" class="btn btn-outline pl-item-delete hidden" id="btnDeleteJob">Delete job</button>
     <div class="btn-row">
       <button class="btn btn-outline" id="btnCancelJob" type="button">Cancel</button>
-      <button class="btn btn-primary" id="btnSaveJob" type="button">Save Job</button>
+      <button class="btn btn-primary" id="btnSaveJob" type="button">Save</button>
     </div>
   </div>
 
@@ -1017,7 +1044,6 @@
 
   <div id="machineModal" class="modal-overlay hidden" aria-hidden="true">
     <div class="modal machine-sheet" role="dialog" aria-modal="true" aria-labelledby="machineModalTitle">
-      <div class="modal-handle" aria-hidden="true"></div>
       <div class="modal-header"><h2 id="machineModalTitle">Machine & serial</h2></div>
       <div class="modal-body">
         <div class="form-group hidden" id="inspectJobGroup">
@@ -1063,7 +1089,6 @@
   
   <div id="plStartSheet" class="modal-overlay hidden" aria-hidden="true">
     <div class="modal machine-sheet" role="dialog" aria-modal="true" aria-labelledby="plStartTitle">
-      <div class="modal-handle" aria-hidden="true"></div>
       <div class="modal-header"><h2 id="plStartTitle">New punchlist</h2></div>
       <div class="modal-body">
         <div class="form-group">
@@ -1078,6 +1103,7 @@
             </select>
           </div>
         </div>
+        <button type="button" class="btn btn-outline pl-item-delete hidden" id="plStartDelete">Delete punchlist</button>
       </div>
       <div class="modal-actions">
         <button type="button" id="plStartCancel" class="btn btn-outline">Cancel</button>
@@ -1104,7 +1130,6 @@
        shared type picker below in v159.) -->
   <div id="genericTextModal" class="modal-overlay hidden" aria-hidden="true">
     <div class="modal machine-sheet" role="dialog" aria-modal="true" aria-labelledby="genericTextTitle">
-      <div class="modal-handle" aria-hidden="true"></div>
       <div class="modal-header"><h2 id="genericTextTitle">Set line</h2></div>
       <div class="modal-body">
         <div class="form-group">
@@ -1127,7 +1152,6 @@
        with suggestions from custom types already used on this device. -->
   <div id="typePickerModal" class="modal-overlay hidden" aria-hidden="true">
     <div class="modal machine-sheet" role="dialog" aria-modal="true" aria-labelledby="typePickerTitle">
-      <div class="modal-handle" aria-hidden="true"></div>
       <div class="modal-header"><h2 id="typePickerTitle">Machine type</h2></div>
       <div class="modal-body">
         <div id="typePickerCommon" class="type-picker-common"></div>
@@ -1177,7 +1201,6 @@
 <div id="tcWeekPickScrim" class="tc-week-pick-scrim" hidden></div>
   <div id="tcWeekPickSheet" class="tc-week-pick-sheet" hidden>
     <div class="tc-week-pick-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
       <div style="padding:4px 4px 10px;text-align:center;">
         <div style="font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Select week</div>
       </div>
@@ -1188,7 +1211,6 @@
   <div id="tcExportScrim" class="tc-export-scrim" hidden></div>
   <div id="tcExportSheet" class="save-sheet tc-export-sheet" hidden>
     <div class="save-sheet-card tc-export-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
       <div class="modal-header tc-export-head">
         <h2>Export</h2>
         <p class="tc-export-sub">Select to export</p>
@@ -1200,13 +1222,14 @@
       </div>
       <div id="tcExportList" class="tc-export-list"></div>
       <div id="tcExportSummary" class="tc-export-summary"></div>
-      <button type="button" class="btn btn-primary" id="tcExportContinue">Continue</button>
-      <button type="button" class="btn btn-outline save-sheet-cancel" id="tcExportCancel">Cancel</button>
+      <div class="btn-row tc-export-actions">
+        <button type="button" class="btn btn-outline" id="tcExportCancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="tcExportContinue">Continue</button>
+      </div>
     </div>
   </div>
 <div id="tcNameSheet" class="save-sheet" hidden>
     <div class="save-sheet-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
       <div style="padding:4px 4px 12px;text-align:center;">
         <div style="font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">Time card</div>
         <div style="font-size:1.05rem;font-weight:650;margin-bottom:14px;">Name for export</div>
@@ -1220,7 +1243,6 @@
   </div>
 <div id="plExportSheet" class="save-sheet" hidden>
     <div class="save-sheet-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
       <button type="button" class="btn btn-primary" id="plExportPdf">Save PDF</button>
       <button type="button" class="btn btn-primary" id="plExportFindings">Export Findings</button>
       <button type="button" class="btn btn-primary" id="plExportXlsx">Save Excel</button>
@@ -1229,7 +1251,6 @@
   </div>
   <div id="saveSheet" class="save-sheet" hidden>
     <div class="save-sheet-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
       <button type="button" class="btn btn-primary" id="saveSheetPdf">Save PDF</button>
       <button type="button" class="btn btn-primary" id="saveSheetDocx">Save Word</button>
       <button type="button" class="btn btn-primary" id="saveSheetXlsx">Save Excel</button>
@@ -1242,7 +1263,6 @@
   <!-- Job picker (link inspection / punchlist to a job) -->
   <div id="jobPickerModal" class="modal-overlay hidden" aria-hidden="true">
     <div class="modal" id="jobPickerSheet" role="dialog" aria-modal="true" aria-labelledby="jobPickerTitle">
-      <div class="modal-handle" aria-hidden="true"></div>
       <div class="modal-header">
         <h2 id="jobPickerTitle">Select Job</h2>
       </div>
@@ -1306,7 +1326,6 @@
   
   <div id="plLinkJobSheet" class="save-sheet" hidden>
     <div class="save-sheet-card">
-      <div class="save-sheet-handle" aria-hidden="true"></div>
       <div style="padding:4px 4px 12px;text-align:center;">
         <div style="font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">Punchlist</div>
         <div id="plLinkJobTitle" style="font-size:1.05rem;font-weight:650;margin-bottom:14px;">Link job</div>
@@ -1327,8 +1346,8 @@
   
   
   
-  <script src="qrcode.min.js?v=160" defer></script>
-  <script src="templates.js?v=160" defer></script>
-  <script src="app.js?v=160" defer></script>
+  <script src="qrcode.min.js?v=168" defer></script>
+  <script src="templates.js?v=168" defer></script>
+  <script src="app.js?v=168" defer></script>
 </body>
 </html>
