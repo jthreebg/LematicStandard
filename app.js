@@ -9476,22 +9476,10 @@ const ICO = {
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist().catch(() => {});
     }
-    function syncOfflineBanner() {
-      let bar = document.getElementById('offlineBanner');
-      if (!bar) {
-        bar = document.createElement('div');
-        bar.id = 'offlineBanner';
-        bar.setAttribute('role', 'status');
-        bar.style.cssText = 'display:none;position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:80;padding:10px 14px;border-radius:12px;background:#2a3036;color:#e8eef2;font-size:0.82rem;text-align:center;border:1px solid rgba(249,253,255,0.12)';
-        bar.textContent = 'Offline — reports and photos stay on this device.';
-        document.body.appendChild(bar);
-      }
-      const offline = (typeof navigator.onLine === 'boolean') ? !navigator.onLine : false;
-      bar.style.display = offline ? 'block' : 'none';
-    }
-    window.addEventListener('online', syncOfflineBanner);
-    window.addEventListener('offline', syncOfflineBanner);
-    syncOfflineBanner();
+    // v169: all online/offline warnings removed (bottom bar, pop-ups,
+    // Punchlist OFFLINE pill). The app is offline-first and nothing syncs
+    // yet, so there is nothing to act on. A sync-status indicator is
+    // planned for Phase 16.
     window.addEventListener('pagehide', () => { persistAllStores().catch(() => {}); });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') persistAllStores().catch(() => {});
@@ -9782,18 +9770,6 @@ const IDB_NAME = "FieldPunchlistDB";
       // fallback, same two toasts.
       return STORE.save('punchlist', data);
     }
-
-    function updateOnlineStatus() {
-      const offline = !navigator.onLine;
-      const offEl = document.getElementById("offline-badge");
-      if (offEl) offEl.classList.toggle("show", offline);
-      const onEl = document.getElementById("online-badge");
-      if (onEl) onEl.style.display = "none";
-      if (offline) toast("You are offline – changes still save on this device");
-    }
-
-    window.addEventListener("online", () => { updateOnlineStatus(); toast("Back online"); });
-    window.addEventListener("offline", updateOnlineStatus);
 
     function getItems() { return data.jobs[data.currentJob] || []; }
     // Phase 7B: now async and returns the real outcome of the persist
@@ -12170,7 +12146,6 @@ const IDB_NAME = "FieldPunchlistDB";
       await plLoadData();
       populateJobSelect();
       renderList();
-      updateOnlineStatus();
       try {
         if (data && data.currentJob) {
           if (typeof window.setLastPunchlistName === 'function') window.setLastPunchlistName(data.currentJob);

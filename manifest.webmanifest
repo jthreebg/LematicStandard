@@ -1,8 +1,9 @@
 {
+  "id": "./",
   "name": "LeMatic Field Service",
   "short_name": "LeMatic FS",
-  "description": "Field service inspections, punchlists, and job reports.",
-  "start_url": "./index.html",
+  "description": "LeMatic field service inspections, punchlists, and job reports.",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
@@ -31,7 +32,8 @@
     {
       "src": "apple-touch-icon.png",
       "sizes": "180x180",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
     }
   ]
 }
