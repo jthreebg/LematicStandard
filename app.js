@@ -2087,9 +2087,9 @@ const ICO = {
           if (row.renamedFrom) back.id = original[row.sourceIndex].id;
           if (kind === 'partsRequests' && Array.isArray(back.parts)) {
             back.parts = back.parts.map(p => (p && p.source && p.source.type === 'punchlist' && invItem[p.source.id])
-              ? Object.assign({}, p, { source: Object.assign({}, p.source, { id: lxsCoerceOldId(invItem[p.source.id].id) }) }) : p);
+              ? Object.assign({}, p, { source: Object.assign({}, p.source, { id: lxsOriginalOldId(invItem[p.source.id].id, (function () { const src = old.partsRequests[row.sourceIndex]; const op = src && Array.isArray(src.parts) ? src.parts.find(q => q && q.id === p.id) : null; return op && op.source ? op.source.id : undefined; })()) }) }) : p);
           }
-          if (kind === 'editLog') back = old.editLog[row.sourceIndex] && lxsUnrekeyEditEntry(back, invList, invItem);
+          if (kind === 'editLog') back = old.editLog[row.sourceIndex] && lxsUnrekeyEditEntry(back, invList, invItem, old.editLog[row.sourceIndex]);
           const srcRec = kind === 'partsRequests' ? old.partsRequests[row.sourceIndex] : kind === 'editLog' ? old.editLog[row.sourceIndex] : original[row.sourceIndex];
           const a = kind === 'inspections' ? LXS.storedJson('inspections', back) : JSON.stringify(back);
           const b = kind === 'inspections' ? LXS.storedJson('inspections', srcRec) : JSON.stringify(srcRec);
@@ -2206,29 +2206,47 @@ const ICO = {
       } catch (e) {}
       return report;
     }
-    function lxsUnrekeyEditEntry(entry, invList, invItem) {
+    function lxsUnrekeyEditEntry(entry, invList, invItem, origEntry) {
       // inverse of LXS.rekeyEditLogEntries (verification only)
       if (!entry || typeof entry !== 'object') return entry;
       const out = Object.assign({}, entry);
       delete out.preUpgradeNoUndo;
-      const back = (row) => {
+      // v171: an old item id comes back exactly as the original entry held it
+      // (the number 6 or the text "6"), so the check compares like with like.
+      const back = (row, origRow) => {
         if (!row || typeof row !== 'object' || row.listKey == null) return row;
         const inv = invItem[row.id];
         const oldKey = invList[row.listKey] || row.listKey;
         if (!inv) return row;
-        const r2 = Object.assign({}, row, { listKey: oldKey, id: lxsCoerceOldId(inv.id, row) });
+        const origId = origRow && typeof origRow === 'object' ? origRow.id : undefined;
+        const r2 = Object.assign({}, row, { listKey: oldKey, id: lxsOriginalOldId(inv.id, origId) });
         if (row.rec && typeof row.rec === 'object') {
+          const origRecId = origRow && origRow.rec && typeof origRow.rec === 'object' ? origRow.rec.id : undefined;
           const rec = {};
-          Object.keys(row.rec).forEach(f => { rec[f] = f === 'id' ? lxsCoerceOldId(inv.id, row) : row.rec[f]; });
+          Object.keys(row.rec).forEach(f => { rec[f] = f === 'id' ? lxsOriginalOldId(inv.id, origRecId) : row.rec[f]; });
           r2.rec = rec;
         }
         return r2;
       };
+      const origList = (o, side) => (o && o[side] && Array.isArray(o[side].punchlistItems)) ? o[side].punchlistItems : [];
       ['before', 'after'].forEach(side => {
-        if (out[side] && Array.isArray(out[side].punchlistItems)) out[side] = Object.assign({}, out[side], { punchlistItems: out[side].punchlistItems.map(back) });
+        if (out[side] && Array.isArray(out[side].punchlistItems)) {
+          const ol = origList(origEntry, side);
+          out[side] = Object.assign({}, out[side], { punchlistItems: out[side].punchlistItems.map((r, i) => back(r, ol[i])) });
+        }
       });
-      if (out.affectedIds && Array.isArray(out.affectedIds.punchlistItems)) out.affectedIds = Object.assign({}, out.affectedIds, { punchlistItems: out.affectedIds.punchlistItems.map(back) });
+      if (out.affectedIds && Array.isArray(out.affectedIds.punchlistItems)) {
+        const ol = (origEntry && origEntry.affectedIds && Array.isArray(origEntry.affectedIds.punchlistItems)) ? origEntry.affectedIds.punchlistItems : [];
+        out.affectedIds = Object.assign({}, out.affectedIds, { punchlistItems: out.affectedIds.punchlistItems.map((r, i) => back(r, ol[i])) });
+      }
       return out;
+    }
+    // v171: the old id exactly as the original record held it. The id map
+    // keys are text, so "6" and 6 look alike there; when the original value
+    // is known and matches as text, that original value is used as-is.
+    function lxsOriginalOldId(idStr, originalValue) {
+      if (originalValue !== undefined && originalValue !== null && String(originalValue) === String(idStr)) return originalValue;
+      return lxsCoerceOldId(idStr);
     }
     function lxsCoerceOldId(idStr, row) {
       // the map key holds String(oldId); numbers were numbers before
