@@ -104,8 +104,20 @@ const ICO = {
       } catch (e) { return fallback; }
     }
     function lsWrite(key, value) {
+      // v170 (Phase 16A): once the new storage is active, the old data keys
+      // are frozen as the safety net — never written again.
+      if (lxsBlocksLegacyWrite(key)) return false;
       try { localStorage.setItem(key, JSON.stringify(value)); return true; }
       catch (e) { return false; }
+    }
+    function lxsBlocksLegacyWrite(key) {
+      try {
+        if ((LXS.isV2() || LXS.oldStorageClosed()) && LXS.LEGACY_LS_DATA_KEYS.indexOf(key) >= 0) {
+          console.warn('[storage] blocked write to frozen old key', key);
+          return true;
+        }
+      } catch (e) {}
+      return false;
     }
 
     function idbOpen() {
@@ -123,6 +135,9 @@ const ICO = {
       });
     }
     function idbGetKv(key) {
+      // v170: non-data cache entries (xlsx templates) live in the new database.
+      if (lxsIsV2Safe() && LXS.LEGACY_KV_DATA_KEYS.indexOf(key) < 0) return LXS.metaGet('kvcache:' + key);
+      if (lxsOldClosedSafe()) return Promise.resolve(undefined);
       return idbOpen().then(db => new Promise((resolve, reject) => {
         const tx = db.transaction('kv', 'readonly');
         const req = tx.objectStore('kv').get(key);
@@ -131,6 +146,14 @@ const ICO = {
       }));
     }
     function idbSetKv(key, value) {
+      if (lxsIsV2Safe()) {
+        if (LXS.LEGACY_KV_DATA_KEYS.indexOf(key) >= 0) {
+          console.warn('[storage] blocked write to frozen old kv key', key);
+          return Promise.resolve(false);
+        }
+        return LXS.metaPut('kvcache:' + key, value).then(() => true);
+      }
+      if (lxsOldClosedSafe()) return Promise.resolve(false);
       return idbOpen().then(db => new Promise((resolve, reject) => {
         const tx = db.transaction('kv', 'readwrite');
         tx.objectStore('kv').put(value, key);
@@ -138,7 +161,17 @@ const ICO = {
         tx.onerror = () => reject(tx.error);
       }));
     }
+    function lxsIsV2Safe() {
+      try { return LXS.isV2(); } catch (e) { return false; }
+    }
+    // v170: an upgraded phone that can't open the new storage never falls
+    // back to the old storage — no reads, no writes.
+    function lxsOldClosedSafe() {
+      try { return LXS.oldStorageClosed(); } catch (e) { return false; }
+    }
     function idbPutPhoto(rec) {
+      if (lxsIsV2Safe()) return Promise.resolve(LXS.stagePhotoPut(rec || {}));
+      if (lxsOldClosedSafe()) return Promise.resolve(false);
       return idbOpen().then(db => new Promise((resolve, reject) => {
         const tx = db.transaction('photos', 'readwrite');
         tx.objectStore('photos').put(rec);
@@ -148,6 +181,8 @@ const ICO = {
     }
     function idbGetPhoto(id) {
       if (!id) return Promise.resolve(null);
+      if (lxsIsV2Safe()) return LXS.getPhoto(id);
+      if (lxsOldClosedSafe()) return Promise.resolve(null);
       return idbOpen().then(db => new Promise((resolve, reject) => {
         const req = db.transaction('photos', 'readonly').objectStore('photos').get(id);
         req.onsuccess = () => resolve(req.result || null);
@@ -157,6 +192,9 @@ const ICO = {
     function idbDeletePhotos(ids) {
       const list = (ids || []).filter(Boolean);
       if (!list.length) return Promise.resolve();
+      // v170: a deleted photo keeps its bytes and gets deletedAt instead.
+      if (lxsIsV2Safe()) { LXS.deletePhotosExplicit(list); return Promise.resolve(); }
+      if (lxsOldClosedSafe()) return Promise.resolve();
       return idbOpen().then(db => new Promise((resolve, reject) => {
         const tx = db.transaction('photos', 'readwrite');
         const st = tx.objectStore('photos');
@@ -166,6 +204,8 @@ const ICO = {
       }));
     }
     function idbGetAllPhotos() {
+      if (lxsIsV2Safe()) return LXS.getAllLivePhotos().catch(() => []);
+      if (lxsOldClosedSafe()) return Promise.resolve([]);
       return idbOpen().then(db => new Promise((resolve, reject) => {
         const req = db.transaction('photos', 'readonly').objectStore('photos').getAll();
         req.onsuccess = () => resolve(req.result || []);
@@ -184,6 +224,9 @@ const ICO = {
     // phase is explicitly not allowed to make.
     const STORE = {
       load(kind, opts) {
+        if (LXS.st.mode === 'v2') return lxsStoreLoad(kind, opts);
+        if (LXS.oldStorageClosed()) return lxsClosedLoad(kind);
+        if (LXS.st.mode === 'pending') console.warn('[storage] load before storage ready', kind, new Error().stack);
         switch (kind) {
           case 'jobs': {
             const fromLs = lsRead('lx8_jobs', []);
@@ -278,6 +321,9 @@ const ICO = {
         }
       },
       save(kind, value, opts) {
+        if (LXS.st.mode === 'v2') return lxsStoreSave(kind, value, opts);
+        if (LXS.oldStorageClosed()) { console.warn('[storage] save refused, storage not open', kind); return kind === 'punchlist' ? Promise.resolve(false) : false; }
+        if (LXS.st.mode === 'pending') console.warn('[storage] save before storage ready', kind, new Error().stack);
         switch (kind) {
           case 'jobs': {
             // Preserves the existing retry-then-return-early quirk: if the
@@ -390,6 +436,2143 @@ const ICO = {
       getAllPhotos() { return idbGetAllPhotos(); },
       deletePhotos(ids) { return idbDeletePhotos(ids); }
     };
+
+    // ========== STORAGE v2 (Phase 16A) ==========
+    // Sync-ready storage. After the one-time upgrade below has finished and
+    // verified, every record of every kind is its own entry in a separate
+    // IndexedDB database (`lematic-fs`), wrapped in an "envelope" that carries
+    // its sync information beside — never inside — the record itself:
+    //
+    //   { kind, id, createdAt, updatedAt, updatedBy, deviceId, deletedAt,
+    //     changeSource, changeRef, json: '<the record exactly as the app uses it>' , ...extras }
+    //
+    // The app keeps working on the same in-memory arrays/objects it always
+    // has; every existing save function still passes its whole list, and this
+    // layer works out what actually changed by comparing each record's text
+    // with the cached text it last stored (a hint lets the busiest paths skip
+    // records they know they didn't touch). New ids → created, different text
+    // → updated, missing from the list → deletedAt set (never erased).
+    //
+    // The old storage (localStorage data keys, `lematic-lx8` kv + photos,
+    // FieldPunchlistDB) is never written again once this is active; it stays
+    // frozen as the safety net. If the upgrade cannot finish, LXS stays in
+    // 'legacy' mode and every v169 storage path below runs unchanged.
+    const LXS = (function () {
+      const DB_NAME = 'lematic-fs';
+      const DB_VER = 1;
+      const KINDS = ['jobs', 'inspections', 'partsRequests', 'customers', 'sites', 'machines', 'serials',
+        'timeEntries', 'punchlistLists', 'punchlistItems', 'editLog'];
+      // Kinds whose screens put a NEW record at the front of the list today
+      // (unshift); the rest add new records at the end (push). Used only to
+      // place records this device has no stored order for (e.g. records that
+      // will arrive from other phones in Phase 16C).
+      const FRONT_KINDS = new Set(['jobs', 'inspections', 'partsRequests', 'editLog']);
+      // localStorage keys that hold v169 data. Frozen once v2 is active.
+      const LEGACY_LS_DATA_KEYS = ['lx8_jobs', 'lx8_inspections', 'lx8_parts_requests', 'lx8_customers', 'lx8_sites',
+        'lx8_machines', 'lx8_serials', 'lx8_timecards', 'lx8_edit_log', 'lx8_visits', 'lx8_visits_meta', 'field_punchlist_v3'];
+      const LEGACY_KV_DATA_KEYS = ['jobs', 'customers', 'sites', 'serials', 'machines', 'parts_requests', 'inspections',
+        'visits', 'punchlist_main', 'edit_log', 'editor_settings'];
+      const CHANGE_SOURCES = ['user', 'restore', 'sampleRemoval', 'editor', 'undo', 'backfill', 'upgrade', 'housekeeping'];
+
+      const st = {
+        mode: 'pending',          // 'pending' | 'v2' | 'legacy' | 'blocked'
+        db: null,
+        deviceId: '',
+        tabId: 'tab_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        arrays: {},               // kind -> live array the app uses
+        known: {},                // kind -> Map(id -> { env, json, obj, deleted })
+        orderCache: {},           // kind -> joined id order last written
+        photos: new Map(),        // photoId -> meta (no blob)
+        pending: new Map(),       // key -> op   (records, photos, meta)
+        pendingFailures: 0,
+        lastFailureAt: 0,
+        flushTimer: null,
+        flushing: null,
+        flushAgain: false,
+        sourceStack: [],
+        sweepTimers: {},
+        restoreMeta: null,        // during a restore: kind -> id -> sync meta from sync_meta.json
+        plLegacy: { lists: {}, items: {} }, // id -> legacy info, consumed when a record is first created
+        meta: {},                 // cached small meta values
+        upgradeFailed: null,
+        rollbackWarning: false,
+        stale: new Set(),
+        readyResolve: null,
+        upgradeReport: null,
+        bc: null,
+        stats: { saves: 0, recordsWritten: 0, multiDeletes: [] }
+      };
+      KINDS.forEach(k => { st.arrays[k] = []; st.known[k] = new Map(); });
+      const ready = new Promise(res => { st.readyResolve = res; });
+
+      // ---------- "this phone has been upgraded" marker ----------
+      // Written in localStorage right after the switch to the new storage.
+      // It holds no data (device id and time only) and is not part of the
+      // old-storage fingerprint. A phone with this marker never goes back
+      // to the old storage.
+      const MARKER_KEY = 'lx8_storage_v2';
+      function markerRead() {
+        try {
+          const raw = localStorage.getItem(MARKER_KEY);
+          if (!raw) return null;
+          try { const v = JSON.parse(raw); return (v && typeof v === 'object') ? v : { raw }; } catch (e) { return { raw }; }
+        } catch (e) { return null; }
+      }
+      function markerWrite(deviceId) {
+        try { localStorage.setItem(MARKER_KEY, JSON.stringify({ deviceId: deviceId || st.deviceId || '', at: new Date().toISOString() })); return true; }
+        catch (e) { return false; }
+      }
+      st.upgradedDevice = !!markerRead();
+      // The old storage is closed for reading and writing once this phone
+      // counts as upgraded, unless the app is running on the new storage.
+      function oldStorageClosed() {
+        return st.mode === 'blocked' || (st.mode === 'pending' && st.upgradedDevice);
+      }
+
+      // ---------- small utils ----------
+      function iso(v) {
+        if (v == null || v === '') return new Date().toISOString();
+        const d = new Date(v);
+        return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+      }
+      function rand6() {
+        try {
+          const a = new Uint32Array(2);
+          crypto.getRandomValues(a);
+          return (a[0].toString(36) + a[1].toString(36) + '000000').slice(0, 6);
+        } catch (e) {
+          return Math.random().toString(36).slice(2, 8);
+        }
+      }
+      function uuid() {
+        try { if (crypto.randomUUID) return crypto.randomUUID(); } catch (e) {}
+        const a = new Uint8Array(16);
+        try { crypto.getRandomValues(a); } catch (e) { for (let i = 0; i < 16; i++) a[i] = Math.floor(Math.random() * 256); }
+        a[6] = (a[6] & 0x0f) | 0x40; a[8] = (a[8] & 0x3f) | 0x80;
+        const h = Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
+        return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+      }
+      // cyrb53: fast 53-bit string hash (content fingerprints for sync_meta.json
+      // and the old-storage rollback check). Not cryptographic.
+      function hash(str, seed) {
+        str = String(str == null ? '' : str);
+        let h1 = 0xdeadbeef ^ (seed || 0), h2 = 0x41c6ce57 ^ (seed || 0);
+        for (let i = 0, ch; i < str.length; i++) {
+          ch = str.charCodeAt(i);
+          h1 = Math.imul(h1 ^ ch, 2654435761);
+          h2 = Math.imul(h2 ^ ch, 1597334677);
+        }
+        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+        return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+      }
+      // Content fingerprint used in sync_meta.json (and checked on restore).
+      // Punchlist items leave out the photo id: a restored photo gets a new
+      // photo id on another phone, but it is still the same item.
+      function syncFp(kind, json) {
+        if (kind === 'punchlistItems') json = String(json).replace(/"@photo:[^"]*"/, '"@photo"');
+        return hash(json);
+      }
+      function techName() {
+        try {
+          const raw = localStorage.getItem('lx8_profile');
+          const p = raw ? JSON.parse(raw) : null;
+          return (p && p.name) ? String(p.name).trim() : '';
+        } catch (e) { return ''; }
+      }
+      function isBase64DataUrl(s) {
+        return typeof s === 'string' && s.length > 5 && s.charCodeAt(0) === 100 /* d */ && /^data:[^,]{0,120};base64,/.test(s.slice(0, 140));
+      }
+      function dataUrlParts(s) {
+        const comma = s.indexOf(',');
+        return { prefix: s.slice(0, comma + 1), b64: s.slice(comma + 1) };
+      }
+      function b64ToBlob(prefix, b64) {
+        const mime = (prefix.match(/^data:([^;,]+)/) || [])[1] || 'image/jpeg';
+        const bin = atob(b64);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        return new Blob([arr], { type: mime });
+      }
+      function blobToB64(blob) {
+        return new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => {
+            const s = String(fr.result || '');
+            resolve(s.slice(s.indexOf(',') + 1));
+          };
+          fr.onerror = () => reject(fr.error || new Error('read-failed'));
+          fr.readAsDataURL(blob);
+        });
+      }
+      function isV2() { return st.mode === 'v2'; }
+
+      // ---------- change source ----------
+      function currentSource() {
+        return st.sourceStack.length ? st.sourceStack[st.sourceStack.length - 1] : { s: 'user', ref: '' };
+      }
+      function pushSource(s, ref) {
+        const e = { s: CHANGE_SOURCES.indexOf(s) >= 0 ? s : 'user', ref: ref || '' };
+        st.sourceStack.push(e);
+        return e;
+      }
+      function popSource(e) {
+        const i = st.sourceStack.lastIndexOf(e);
+        if (i >= 0) st.sourceStack.splice(i, 1);
+      }
+      async function withSource(s, ref, fn) {
+        const e = pushSource(s, ref);
+        try { return await fn(); } finally { popSource(e); }
+      }
+      function withSourceSync(s, ref, fn) {
+        const e = pushSource(s, ref);
+        try { return fn(); } finally { popSource(e); }
+      }
+
+      // ---------- IndexedDB ----------
+      function reqP(r) {
+        return new Promise((resolve, reject) => { r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+      }
+      function txDone(tx) {
+        return new Promise((resolve, reject) => {
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => reject(tx.error || new Error('tx-error'));
+          tx.onabort = () => reject(tx.error || new Error('tx-abort'));
+        });
+      }
+      function openFs() {
+        if (st.db) return Promise.resolve(st.db);
+        if (!('indexedDB' in window)) return Promise.reject(new Error('no-idb'));
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open(DB_NAME, DB_VER);
+          req.onupgradeneeded = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains('records')) {
+              const s = db.createObjectStore('records', { keyPath: ['kind', 'id'] });
+              s.createIndex('kind', 'kind', { unique: false });
+              s.createIndex('updatedAt', 'updatedAt', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('photos')) {
+              const p = db.createObjectStore('photos', { keyPath: 'id' });
+              p.createIndex('updatedAt', 'updatedAt', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('photoData')) db.createObjectStore('photoData', { keyPath: 'id' });
+            if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
+          };
+          req.onsuccess = () => {
+            st.db = req.result;
+            st.db.onversionchange = () => { try { st.db.close(); } catch (e) {} st.db = null; };
+            resolve(st.db);
+          };
+          req.onerror = () => reject(req.error || new Error('fs-open-failed'));
+          req.onblocked = () => reject(new Error('fs-open-blocked'));
+        });
+      }
+      async function metaGet(key) {
+        const db = await openFs();
+        return reqP(db.transaction('meta', 'readonly').objectStore('meta').get(key));
+      }
+      async function metaPut(key, value) {
+        const db = await openFs();
+        const tx = db.transaction('meta', 'readwrite');
+        tx.objectStore('meta').put(value, key);
+        await txDone(tx);
+        st.meta[key] = value;
+      }
+
+      // ---------- envelopes ----------
+      function newEnv(kind, id, k, opts) {
+        const src = currentSource();
+        const now = new Date().toISOString();
+        const env = {
+          kind, id,
+          createdAt: k ? k.env.createdAt : now,
+          updatedAt: now,
+          updatedBy: techName(),
+          deviceId: st.deviceId,
+          deletedAt: null,
+          changeSource: src.s,
+          changeRef: src.ref || ''
+        };
+        if (k && k.env) {
+          ['listId', 'position', 'legacyId', 'legacyKey', 'legacyHadListName', 'photoId', 'sample'].forEach(f => {
+            if (k.env[f] !== undefined) env[f] = k.env[f];
+          });
+        }
+        if (opts && opts.extras) Object.assign(env, opts.extras);
+        return env;
+      }
+      function stageRecord(kind, id, json, obj, opts) {
+        const known = st.known[kind];
+        const k = known.get(id);
+        const env = newEnv(kind, id, k, opts);
+        if (!k) {
+          // First time this device stores this record.
+          const rm = st.restoreMeta && st.restoreMeta[kind] && st.restoreMeta[kind][id];
+          if (rm && rm.fp === syncFp(kind, json)) {
+            ['createdAt', 'updatedAt', 'updatedBy', 'deviceId'].forEach(f => { if (rm[f]) env[f] = rm[f]; });
+          } else if (opts && opts.createdAt) {
+            env.createdAt = opts.createdAt;
+          }
+          if (kind === 'jobs' && id === 'job_sample_demo') env.sample = true;
+          if (kind === 'inspections' && id === 'ins_example_orangeburg') env.sample = true;
+          if (kind === 'timeEntries' && String(id).indexOf('tc_sample_') === 0) env.sample = true;
+        }
+        known.set(id, { env, json, obj, deleted: false });
+        st.pending.set('r|' + kind + '|' + id, { t: 'rec', kind, id, env, json });
+        st.stats.recordsWritten++;
+      }
+      function stageDelete(kind, id, srcOverride) {
+        const known = st.known[kind];
+        const k = known.get(id);
+        if (!k || k.deleted) return false;
+        const e = srcOverride ? pushSource(srcOverride.s, srcOverride.ref) : null;
+        let env;
+        try { env = newEnv(kind, id, k); } finally { if (e) popSource(e); }
+        env.deletedAt = env.updatedAt;
+        // Trimmed edit-log entries keep only a small marker (id + deletedAt),
+        // not their (possibly multi-MB) before/after snapshots.
+        const json = kind === 'editLog' ? JSON.stringify({ id }) : k.json;
+        known.set(id, { env, json, obj: null, deleted: true });
+        st.pending.set('r|' + kind + '|' + id, { t: 'rec', kind, id, env, json });
+        st.stats.recordsWritten++;
+        return true;
+      }
+      function stageMeta(key, value) {
+        st.meta[key] = value;
+        st.pending.set('m|' + key, { t: 'meta', key, value });
+      }
+
+      // ---------- stored form per kind ----------
+      function inspectionStoredCopy(ins) {
+        // Same per-record rules v169's stripInspectionPhotos() uses before
+        // every save: a temporary on-screen blob: link is never stored, and
+        // an inline copy is dropped once the photo has its own photoId.
+        if (!ins || typeof ins !== 'object') return ins;
+        const copy = Object.assign({}, ins);
+        if (copy.results && typeof copy.results === 'object') {
+          const r2 = {};
+          Object.keys(copy.results).forEach(k => {
+            const row = copy.results[k];
+            if (!row || typeof row !== 'object') { r2[k] = row; return; }
+            if (row.photoId || (row.photoDataUrl && String(row.photoDataUrl).indexOf('blob:') === 0)) {
+              const rr = Object.assign({}, row);
+              delete rr.photoDataUrl;
+              r2[k] = rr;
+            } else r2[k] = row;
+          });
+          copy.results = r2;
+        }
+        if (Array.isArray(copy.findings)) {
+          copy.findings = copy.findings.map(f => {
+            if (f && typeof f === 'object' && f.photoId && 'photoDataUrl' in f) {
+              const ff = Object.assign({}, f); delete ff.photoDataUrl; return ff;
+            }
+            return f;
+          });
+        }
+        return copy;
+      }
+      function storedJson(kind, rec) {
+        if (kind === 'inspections') return JSON.stringify(inspectionStoredCopy(rec));
+        return JSON.stringify(rec);
+      }
+
+      // ---------- generic list save (the choke point) ----------
+      function saveKind(kind, list, opts) {
+        if (!Array.isArray(list)) list = [];
+        st.arrays[kind] = list;
+        st.stats.saves++;
+        const known = st.known[kind];
+        const hint = opts && opts.hintIds ? new Set(opts.hintIds.map(String)) : null;
+        const seen = new Set();
+        const ids = [];
+        for (let i = 0; i < list.length; i++) {
+          const rec = list[i];
+          if (!rec || typeof rec !== 'object' || rec.id == null || rec.id === '') continue;
+          const id = String(rec.id);
+          if (seen.has(id)) continue; // a duplicate id inside one list is stored once (first wins)
+          seen.add(id);
+          ids.push(id);
+          const k = known.get(id);
+          if (hint && k && !k.deleted && !hint.has(id) && k.obj === rec) continue;
+          const json = storedJson(kind, rec);
+          if (!k || k.deleted || k.json !== json) stageRecord(kind, id, json, rec);
+          else k.obj = rec;
+        }
+        // Deletions: only records THIS tab has loaded can be marked deleted
+        // (a stale second tab never deletes what it never saw).
+        let deleted = 0;
+        known.forEach((k, id) => {
+          if (!k.deleted && !seen.has(id)) {
+            const src = (kind === 'editLog' && currentSource().s === 'user') ? { s: 'housekeeping', ref: '' }
+              : (kind === 'editLog' && currentSource().s === 'editor') ? { s: 'housekeeping', ref: currentSource().ref } : null;
+            if (stageDelete(kind, id, src)) deleted++;
+          }
+        });
+        if (deleted > 1) st.stats.multiDeletes.push({ kind, n: deleted, source: currentSource().s, ref: currentSource().ref, at: new Date().toISOString() });
+        const order = ids.join('\u0001');
+        if (st.orderCache[kind] !== order) {
+          st.orderCache[kind] = order;
+          stageMeta('order:' + kind, ids);
+        }
+        if (hint) scheduleSweep(kind);
+        flushSoon();
+        return true;
+      }
+      function scheduleSweep(kind) {
+        const src = currentSource();
+        clearTimeout(st.sweepTimers[kind]);
+        st.sweepTimers[kind] = setTimeout(() => {
+          withSourceSync(src.s, src.ref, () => saveKind(kind, st.arrays[kind]));
+        }, 1200);
+      }
+      function sweepAllNow() {
+        if (st.plSweepTimer) { clearTimeout(st.plSweepTimer); st.plSweepTimer = null; if (st.plLastBundle) savePunchlist(st.plLastBundle); }
+        Object.keys(st.sweepTimers).forEach(kind => {
+          if (st.sweepTimers[kind]) {
+            clearTimeout(st.sweepTimers[kind]);
+            st.sweepTimers[kind] = null;
+            saveKind(kind, st.arrays[kind]);
+          }
+        });
+      }
+
+      // ---------- photos ----------
+      // Two stores: `photos` holds each photo's details (owner, size, type,
+      // sync times, deletedAt) and is small enough to read at start-up;
+      // `photoData` holds the picture itself — image bytes (a Blob), or, for
+      // punchlist item photos, the exact data-URL text the app has always
+      // kept for them (so they come back character-for-character, with no
+      // conversion when Punchlist opens).
+      function payloadSize(dataUrl) {
+        const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+        const pad = b64.endsWith('==') ? 2 : (b64.endsWith('=') ? 1 : 0);
+        return Math.floor(b64.length * 3 / 4) - pad;
+      }
+      function stagePhotoPut(rec, opts) {
+        // rec: { id, blob? | dataUrl?, caption?, createdAt? (ms or ISO), ownerKind?, ownerId?, ownerPart? }
+        const prev = st.photos.get(rec.id);
+        const src = currentSource();
+        const now = new Date().toISOString();
+        const isText = typeof rec.dataUrl === 'string';
+        const meta = {
+          id: rec.id,
+          type: isText ? (((rec.dataUrl.match(/^data:([^;,]+)/) || [])[1]) || 'image/jpeg') : ((rec.blob && rec.blob.type) || (prev && prev.type) || 'image/jpeg'),
+          size: isText ? payloadSize(rec.dataUrl) : ((rec.blob && rec.blob.size) || 0),
+          storedAs: isText ? 'dataUrl' : 'blob',
+          caption: rec.caption != null ? rec.caption : (prev ? prev.caption || '' : ''),
+          ownerKind: rec.ownerKind || (prev && prev.ownerKind) || '',
+          ownerId: rec.ownerId || (prev && prev.ownerId) || '',
+          ownerPart: rec.ownerPart != null ? rec.ownerPart : (prev && prev.ownerPart) || '',
+          createdAt: prev ? prev.createdAt : iso(rec.createdAt),
+          updatedAt: now,
+          updatedBy: techName(),
+          deviceId: st.deviceId,
+          deletedAt: null,
+          changeSource: (opts && opts.source) || src.s,
+          changeRef: src.ref || ''
+        };
+        const payload = isText ? { id: rec.id, dataUrl: rec.dataUrl } : { id: rec.id, blob: rec.blob };
+        st.photos.set(rec.id, Object.assign({}, meta));
+        st.pending.set('p|' + rec.id, { t: 'photo', id: rec.id, meta, payload });
+        flushSoon();
+        return rec.id;
+      }
+      function stagePhotoPatch(id, patch) {
+        const prev = st.photos.get(id);
+        if (!prev) return false;
+        const src = currentSource();
+        const now = new Date().toISOString();
+        const p = Object.assign({ updatedAt: now, updatedBy: techName(), deviceId: st.deviceId, changeSource: src.s, changeRef: src.ref || '' }, patch);
+        st.photos.set(id, Object.assign({}, prev, p));
+        const key = 'p|' + id;
+        const existing = st.pending.get(key);
+        if (existing && existing.t === 'photo') {
+          Object.assign(existing.meta, p);
+        } else if (existing && existing.t === 'photoPatch') {
+          Object.assign(existing.patch, p);
+        } else {
+          st.pending.set(key, { t: 'photoPatch', id, patch: p });
+        }
+        flushSoon();
+        return true;
+      }
+      function tagPhotoOwner(photoId, ownerKind, ownerId, ownerPart) {
+        if (!photoId) return;
+        const m = st.photos.get(photoId);
+        if (!m || m.ownerKind) return; // owner is set once; never changed by inference
+        stagePhotoPatch(photoId, { ownerKind, ownerId: String(ownerId || ''), ownerPart: ownerPart != null ? String(ownerPart) : '' });
+      }
+      // Explicit, user-initiated photo deletion only (reviewer change 1).
+      function deletePhotosExplicit(ids) {
+        let n = 0;
+        (ids || []).filter(Boolean).forEach(id => {
+          const m = st.photos.get(id);
+          if (m && !m.deletedAt) {
+            stagePhotoPatch(id, { deletedAt: new Date().toISOString() });
+            n++;
+          }
+        });
+        return n;
+      }
+      async function getPayload(id) {
+        const p = st.pending.get('p|' + id);
+        if (p && p.t === 'photo') return p.payload;
+        const db = await openFs();
+        return reqP(db.transaction('photoData', 'readonly').objectStore('photoData').get(id));
+      }
+      function payloadBlob(payload, meta) {
+        if (!payload) return null;
+        if (payload.blob) return payload.blob;
+        if (typeof payload.dataUrl === 'string') { const parts = dataUrlParts(payload.dataUrl); return b64ToBlob(parts.prefix, parts.b64); }
+        return null;
+      }
+      // Same shape v169's photo store returned: { id, blob, caption, createdAt, ... }.
+      async function getPhoto(id) {
+        if (!id) return null;
+        const m = st.photos.get(id);
+        if (!m || m.deletedAt) return null;
+        try {
+          const payload = await getPayload(id);
+          const blob = payloadBlob(payload, m);
+          if (!blob) return null;
+          return Object.assign({}, m, { blob });
+        } catch (e) { return null; }
+      }
+      // A restore puts back a photo this device already has with the same
+      // bytes: nothing to write (so its sync times don't change).
+      async function photoUnchanged(id, blob) {
+        const m = st.photos.get(id);
+        if (!m || m.deletedAt || !blob || m.size !== blob.size) return false;
+        const cur = await getPhoto(id);
+        if (!cur || !cur.blob || cur.blob.size !== blob.size) return false;
+        const [x, y] = await Promise.all([cur.blob.arrayBuffer(), blob.arrayBuffer()]);
+        const u = new Uint8Array(x), v = new Uint8Array(y);
+        for (let i = 0; i < u.length; i++) if (u[i] !== v[i]) return false;
+        return true;
+      }
+      // Every photo that isn't deleted (unowned ones too), with its bytes.
+      async function getAllLivePhotos(opts) {
+        await flush().catch(() => {});
+        const exclude = (opts && opts.exclude) || new Set();
+        const out = [];
+        for (const [id, m] of st.photos) {
+          if (m.deletedAt || exclude.has(id)) continue;
+          const payload = await getPayload(id).catch(() => null);
+          const blob = payloadBlob(payload, m);
+          if (blob) out.push(Object.assign({}, m, { blob }));
+        }
+        return out;
+      }
+      // Owner tagging from record photo references (only fills empty owners).
+      function tagOwnersFromRecord(kind, rec) {
+        if (!rec || typeof rec !== 'object') return;
+        if (kind === 'inspections') {
+          if (rec.results && typeof rec.results === 'object') {
+            Object.keys(rec.results).forEach(k => {
+              const row = rec.results[k];
+              if (row && row.photoId) tagPhotoOwner(row.photoId, 'inspections', rec.id, 'result:' + k);
+            });
+          }
+          (Array.isArray(rec.findings) ? rec.findings : []).forEach((f, i) => {
+            if (f && f.photoId) tagPhotoOwner(f.photoId, 'inspections', rec.id, 'finding:' + i);
+          });
+        } else if (kind === 'partsRequests') {
+          (Array.isArray(rec.parts) ? rec.parts : []).forEach(p => {
+            if (p && p.photoId) tagPhotoOwner(p.photoId, 'partsRequests', rec.id, 'line:' + (p.id || ''));
+          });
+        }
+      }
+
+      // ---------- flush (write queue) ----------
+      function flushSoon() {
+        if (st.mode !== 'v2') return;
+        if (st.flushTimer) return;
+        st.flushTimer = setTimeout(() => { st.flushTimer = null; flush().catch(() => {}); }, 0);
+      }
+      const inspectionPhotoMemo = new Map(); // data: URL text -> photoId (so re-saves never mint duplicates)
+      function extractInspectionPhotosForWrite(json, id, photoOps) {
+        // v169's durable inspection copy kept inline data: photos in the
+        // photo store and only a photoId on the record. Same here, at write
+        // time; the in-memory record is left exactly as the app has it.
+        if (json.indexOf('data:') < 0) return json;
+        const data = JSON.parse(json);
+        let changed = false;
+        const handle = (row, prefix) => {
+          if (!row || typeof row !== 'object' || row.photoId || !isBase64DataUrl(row.photoDataUrl)) return;
+          let pid = inspectionPhotoMemo.get(row.photoDataUrl);
+          if (!pid) {
+            pid = prefix + '_' + Date.now() + '_' + rand6();
+            const parts = dataUrlParts(row.photoDataUrl);
+            const blob = b64ToBlob(parts.prefix, parts.b64);
+            photoOps.push({ id: pid, blob, ownerId: id, ownerPart: prefix.indexOf('insf_') === 0 ? 'finding' : 'result' });
+            inspectionPhotoMemo.set(row.photoDataUrl, pid);
+          }
+          row.photoId = pid;
+          delete row.photoDataUrl;
+          changed = true;
+        };
+        if (data.results && typeof data.results === 'object') Object.keys(data.results).forEach(k => handle(data.results[k], 'ins_' + id + '_' + k));
+        if (Array.isArray(data.findings)) data.findings.forEach((f, i) => handle(f, 'insf_' + id + '_' + i));
+        return changed ? JSON.stringify(data) : json;
+      }
+      async function flush() {
+        if (st.mode !== 'v2') return true;
+        if (st.flushing) { st.flushAgain = true; return st.flushing; }
+        if (!st.pending.size) return true;
+        const batch = Array.from(st.pending.entries());
+        st.flushing = (async () => {
+          const db = await openFs();
+          const extraPhotoOps = [];
+          const recOps = [];
+          for (const [key, op] of batch) {
+            if (op.t === 'rec') {
+              let json = op.json;
+              if (op.kind === 'inspections' && !op.env.deletedAt) json = extractInspectionPhotosForWrite(json, op.id, extraPhotoOps);
+              recOps.push([key, op, json]);
+            }
+          }
+          extraPhotoOps.forEach(p => {
+            if (!st.photos.has(p.id)) {
+              const meta = {
+                id: p.id, type: p.blob.type || 'image/jpeg', size: p.blob.size, storedAs: 'blob', caption: '',
+                ownerKind: 'inspections', ownerId: String(p.ownerId || ''), ownerPart: p.ownerPart || '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+                updatedBy: techName(), deviceId: st.deviceId, deletedAt: null, changeSource: currentSource().s, changeRef: ''
+              };
+              st.photos.set(p.id, Object.assign({}, meta));
+              batch.push(['p|' + p.id, { t: 'photo', id: p.id, meta, payload: { id: p.id, blob: p.blob } }]);
+            }
+          });
+          const tx = db.transaction(['records', 'photos', 'photoData', 'meta'], 'readwrite');
+          const rs = tx.objectStore('records');
+          const ps = tx.objectStore('photos');
+          const pds = tx.objectStore('photoData');
+          const ms = tx.objectStore('meta');
+          try {
+            for (const [, op, json] of recOps) {
+              const row = Object.assign({}, op.env, { json });
+              rs.put(row);
+            }
+            for (const [, op] of batch) {
+              if (op.t === 'photo') { ps.put(op.meta); pds.put(op.payload); }
+              else if (op.t === 'meta') ms.put(op.value, op.key);
+              else if (op.t === 'photoPatch') {
+                const g = ps.get(op.id);
+                g.onsuccess = () => { if (g.result) ps.put(Object.assign(g.result, op.patch)); };
+              }
+            }
+          } catch (e) {
+            try { tx.abort(); } catch (e2) {}
+            throw e;
+          }
+          await txDone(tx);
+          // Success: drop exactly the ops we wrote (a newer op staged during
+          // the write for the same key stays pending).
+          for (const [key, op] of batch) if (st.pending.get(key) === op) st.pending.delete(key);
+          // Owner tagging after the record writes landed.
+          for (const [, op] of recOps) {
+            if (!op.env.deletedAt && (op.kind === 'inspections' || op.kind === 'partsRequests')) {
+              const k = st.known[op.kind].get(op.id);
+              if (k && k.obj) tagOwnersFromRecord(op.kind, k.obj);
+            }
+          }
+          if (st.pendingFailures) {
+            st.pendingFailures = 0;
+            window.__lxPersistDurableFailed = null;
+          }
+          try { if (st.bc) st.bc.postMessage({ from: st.tabId, kinds: Array.from(new Set(recOps.map(r => r[1].kind))) }); } catch (e) {}
+          return true;
+        })();
+        try {
+          return await st.flushing;
+        } catch (e) {
+          st.pendingFailures = st.pending.size;
+          st.lastFailureAt = Date.now();
+          window.__lxPersistDurableFailed = { at: Date.now(), err: String((e && e.message) || e) };
+          console.warn('[storage] write failed; changes kept and will be retried', e);
+          try { toast('Could not save — storage full or unavailable', 3500); } catch (e2) {}
+          return false;
+        } finally {
+          st.flushing = null;
+          if (st.flushAgain) { st.flushAgain = false; if (st.pending.size && !st.pendingFailures) flushSoon(); }
+        }
+      }
+      function pendingCount() { return st.pendingFailures ? st.pending.size : 0; }
+
+      // ---------- loading (v2 boot) ----------
+      async function loadAllIntoMemory() {
+        const db = await openFs();
+        const tx = db.transaction(['records', 'photos', 'meta'], 'readonly');
+        const recs = await reqP(tx.objectStore('records').getAll());
+        const metaKeys = await reqP(tx.objectStore('meta').getAllKeys());
+        const metaVals = await reqP(tx.objectStore('meta').getAll());
+        const photoRecs = await reqP(tx.objectStore('photos').getAll()); // details only — no picture data
+        metaKeys.forEach((k, i) => { st.meta[k] = metaVals[i]; });
+        KINDS.forEach(k => { st.known[k] = new Map(); st.arrays[k] = []; });
+        const byKind = {};
+        KINDS.forEach(k => { byKind[k] = []; });
+        for (const r of recs) {
+          if (!r || !st.known[r.kind]) continue;
+          const env = Object.assign({}, r);
+          const json = env.json;
+          delete env.json;
+          if (env.deletedAt) {
+            st.known[r.kind].set(r.id, { env, json, obj: null, deleted: true });
+            continue;
+          }
+          const obj = JSON.parse(json);
+          st.known[r.kind].set(r.id, { env, json, obj, deleted: false });
+          byKind[r.kind].push({ env, obj });
+        }
+        KINDS.forEach(kind => {
+          const order = Array.isArray(st.meta['order:' + kind]) ? st.meta['order:' + kind] : [];
+          st.arrays[kind] = orderRecords(kind, byKind[kind], order).map(x => x.obj);
+          st.orderCache[kind] = st.arrays[kind].map(o => String(o.id)).join('\u0001');
+        });
+        st.photos = new Map();
+        photoRecs.forEach(p => st.photos.set(p.id, p));
+      }
+      // Order rule (reviewer change 6): records in this device's stored order
+      // come first, in that order. Records with no stored position (e.g.
+      // arriving from another phone in 16C) are placed where a NEW record of
+      // that kind goes today — at the front (newest first) for jobs,
+      // inspections, parts requests and the edit log; at the end (oldest
+      // first) for everything else — so they always appear.
+      function orderRecords(kind, rows, order) {
+        if (kind === 'punchlistItems') {
+          return rows.slice().sort((a, b) => {
+            const pa = Number(a.env.position), pb = Number(b.env.position);
+            if (pa !== pb) return (isNaN(pa) ? Infinity : pa) - (isNaN(pb) ? Infinity : pb);
+            return String(a.env.createdAt).localeCompare(String(b.env.createdAt));
+          });
+        }
+        const pos = new Map();
+        order.forEach((id, i) => pos.set(String(id), i));
+        const inOrder = rows.filter(r => pos.has(String(r.env.id))).sort((a, b) => pos.get(String(a.env.id)) - pos.get(String(b.env.id)));
+        const rest = rows.filter(r => !pos.has(String(r.env.id)));
+        const byCreated = (a, b) => String(a.env.createdAt).localeCompare(String(b.env.createdAt)) || String(a.env.id).localeCompare(String(b.env.id));
+        if (FRONT_KINDS.has(kind)) {
+          rest.sort((a, b) => byCreated(b, a));
+          return rest.concat(inOrder);
+        }
+        rest.sort(byCreated);
+        return inOrder.concat(rest);
+      }
+
+      // ---------- STORE facade used by the v169 code paths in v2 mode ----------
+      function load(kind) {
+        if (kind === 'timecards') {
+          return { entries: st.arrays.timeEntries, active: st.meta['tc:active'] || null };
+        }
+        if (kind === 'visits') return [];
+        if (kind === 'editorSettings') {
+          try {
+            const raw = localStorage.getItem('lx8_editor_settings');
+            const p = raw ? JSON.parse(raw) : null;
+            return (p && typeof p === 'object') ? p : { pin: '' };
+          } catch (e) { return { pin: '' }; }
+        }
+        if (!st.known[kind]) throw new Error('STORE.load: unknown kind "' + kind + '"');
+        return st.arrays[kind];
+      }
+      function save(kind, value, opts) {
+        if (kind === 'timecards') {
+          const v = value || {};
+          saveKind('timeEntries', Array.isArray(v.entries) ? v.entries : []);
+          const activeJson = JSON.stringify(v.active || null);
+          if (JSON.stringify(st.meta['tc:active'] || null) !== activeJson) stageMeta('tc:active', v.active || null);
+          flushSoon();
+          return true;
+        }
+        if (kind === 'visits') return true; // the removed Visit feature is no longer written
+        if (kind === 'editorSettings') {
+          // Device setting: localStorage only, as before (no kv mirror any more).
+          try { localStorage.setItem('lx8_editor_settings', JSON.stringify(value || { pin: '' })); return true; } catch (e) { return false; }
+        }
+        if (kind === 'serials' && currentSource().s !== 'restore') {
+          // Unused since Phase 15A; only a backup restore writes it now.
+          st.arrays.serials = Array.isArray(value) ? value : [];
+          return true;
+        }
+        if (!st.known[kind]) throw new Error('STORE.save: unknown kind "' + kind + '"');
+        return saveKind(kind, value, opts);
+      }
+
+      // ---------- punchlist (bundle in memory, records in storage) ----------
+      const PHOTO_MARK = '@photo:';
+      function isUniqueListKey(key) { return /^(pl|job)_[a-z0-9]{6,}/i.test(String(key)); }
+      function isUniqueItemId(id) { return typeof id === 'string' && /^[a-z]{2,6}_[a-z0-9]{8,}$/i.test(id); }
+      function listLabel(key) {
+        const k = st.known.punchlistLists.get(String(key));
+        if (k && k.env && k.env.legacyKey && !isUniqueListKey(k.env.legacyKey)) return k.env.legacyKey;
+        const leg = st.plLegacy.lists[String(key)];
+        if (leg && leg.legacyKey && !isUniqueListKey(leg.legacyKey)) return leg.legacyKey;
+        return String(key);
+      }
+      function idMap() {
+        if (!st.meta.idMap) st.meta.idMap = { lists: {}, items: {} };
+        return st.meta.idMap;
+      }
+      // Re-key a punchlist bundle in the OLD shape (name-keyed lists, numbered
+      // items) to unique ids. Uses (and extends) the saved old→new id map, so
+      // the same old list/item always gets the same new id on this device.
+      // Returns { bundle, changed, mapAdded }.
+      function rekeyBundle(src, opts) {
+        const map = idMap();
+        let mapAdded = false;
+        const out = {};
+        Object.keys(src || {}).forEach(k => { if (k !== 'jobs') out[k] = src[k]; });
+        const jobs = (src && src.jobs && typeof src.jobs === 'object') ? src.jobs : {};
+        const keyMap = {};
+        const seenItemIds = new Set();
+        // ids already used by other lists in memory count as taken
+        if (opts && opts.takenIds) opts.takenIds.forEach(id => seenItemIds.add(String(id)));
+        out.jobs = {};
+        Object.keys(jobs).forEach(oldKey => {
+          let newKey = oldKey;
+          if (!isUniqueListKey(oldKey)) {
+            newKey = map.lists[oldKey];
+            if (!newKey) { newKey = newEntityId('pl'); map.lists[oldKey] = newKey; mapAdded = true; }
+            st.plLegacy.lists[newKey] = { legacyKey: oldKey, legacyHadListName: !!(src.listNames && Object.prototype.hasOwnProperty.call(src.listNames, oldKey)) };
+          }
+          keyMap[oldKey] = newKey;
+          const items = Array.isArray(jobs[oldKey]) ? jobs[oldKey] : [];
+          out.jobs[newKey] = items.map(it => {
+            if (!it || typeof it !== 'object') return it;
+            const oldId = it.id;
+            let newId = oldId;
+            const mk = oldKey + '\u0001' + String(oldId);
+            if (!isUniqueItemId(oldId) || seenItemIds.has(String(oldId))) {
+              newId = map.items[mk];
+              if (!newId || seenItemIds.has(newId)) { newId = newEntityId('pli'); map.items[mk] = newId; mapAdded = true; }
+              st.plLegacy.items[newId] = { legacyId: oldId, legacyKey: oldKey };
+            }
+            seenItemIds.add(String(newId));
+            if (newId === oldId) return it;
+            const copy = {};
+            Object.keys(it).forEach(f => { copy[f] = f === 'id' ? newId : it[f]; });
+            return copy;
+          });
+        });
+        const remapKeys = (obj) => {
+          if (!obj || typeof obj !== 'object') return obj;
+          const o = {};
+          Object.keys(obj).forEach(k => { o[keyMap[k] || k] = obj[k]; });
+          return o;
+        };
+        if (src && src.listNames) out.listNames = remapKeys(src.listNames);
+        // a list that was keyed by its name keeps that name as its display name
+        Object.keys(keyMap).forEach(oldKey => {
+          const nk = keyMap[oldKey];
+          if (nk !== oldKey) {
+            if (!out.listNames) out.listNames = {};
+            if (!Object.prototype.hasOwnProperty.call(out.listNames, nk)) out.listNames[nk] = oldKey;
+          }
+        });
+        if (src && src.jobIdByKey) out.jobIdByKey = remapKeys(src.jobIdByKey);
+        if (src && src.keyByJobId) {
+          out.keyByJobId = {};
+          Object.keys(src.keyByJobId).forEach(j => { const v = src.keyByJobId[j]; out.keyByJobId[j] = keyMap[v] || v; });
+        }
+        if (src && 'currentJob' in src) out.currentJob = keyMap[src.currentJob] || src.currentJob;
+        return { bundle: out, keyMap, mapAdded };
+      }
+      function resolveLegacyListKey(key) {
+        if (key == null) return key;
+        const map = idMap();
+        return map.lists[String(key)] || key;
+      }
+      function plListData(data, key) {
+        const listNames = data.listNames || {};
+        const jobIdByKey = data.jobIdByKey || {};
+        const keyByJobId = data.keyByJobId || {};
+        const hasListName = Object.prototype.hasOwnProperty.call(listNames, key);
+        const jobLinked = Object.prototype.hasOwnProperty.call(jobIdByKey, key);
+        const primaryForJobs = Object.keys(keyByJobId).filter(j => keyByJobId[j] === key);
+        return {
+          id: key,
+          name: hasListName ? listNames[key] : null,
+          hasListName,
+          jobLinked,
+          jobId: jobLinked ? jobIdByKey[key] : null,
+          primaryForJobs
+        };
+      }
+      function plExtras(data) {
+        // Anything in the bundle that doesn't belong to an existing list
+        // (dangling lookup entries, unknown top-level fields). Device-local.
+        const jobs = data.jobs || {};
+        const ex = { listNames: {}, jobIdByKey: {}, keyByJobId: {}, top: {}, topOrder: Object.keys(data) };
+        Object.keys(data.listNames || {}).forEach(k => { if (!(k in jobs)) ex.listNames[k] = data.listNames[k]; });
+        Object.keys(data.jobIdByKey || {}).forEach(k => { if (!(k in jobs)) ex.jobIdByKey[k] = data.jobIdByKey[k]; });
+        Object.keys(data.keyByJobId || {}).forEach(j => { if (!(data.keyByJobId[j] in jobs)) ex.keyByJobId[j] = data.keyByJobId[j]; });
+        Object.keys(data).forEach(k => {
+          if (['jobs', 'currentJob', 'listNames', 'jobIdByKey', 'keyByJobId'].indexOf(k) < 0) ex.top[k] = data[k];
+        });
+        return ex;
+      }
+      function savePunchlist(data, opts) {
+        if (!data || typeof data !== 'object' || !data.jobs || typeof data.jobs !== 'object') return true;
+        st.plLastBundle = data;
+        clearTimeout(st.plSweepTimer);
+        if (opts && opts.listsOnly) {
+          // Opening a list only changes the lists / current list: store that
+          // now and check every item a moment later (same idea as the
+          // inspection keystroke hint).
+          const src = currentSource();
+          st.plSweepTimer = setTimeout(() => { withSourceSync(src.s, src.ref, () => savePunchlist(st.plLastBundle)); }, 1200);
+        }
+        const jobs = data.jobs;
+        // Safety net: any old-style list key or item number that slips into
+        // the in-memory bundle gets a unique id before it is stored.
+        let needsRekey = false;
+        const seenIds = new Set();
+        Object.keys(jobs).forEach(key => {
+          if (!isUniqueListKey(key)) needsRekey = true;
+          (Array.isArray(jobs[key]) ? jobs[key] : []).forEach(it => {
+            if (!it || typeof it !== 'object') return;
+            const id = String(it.id);
+            if (!isUniqueItemId(it.id) || seenIds.has(id)) needsRekey = true;
+            seenIds.add(id);
+          });
+        });
+        if (needsRekey) {
+          const r = rekeyBundle(data).bundle;
+          Object.keys(data).forEach(k => { delete data[k]; });
+          Object.assign(data, r);
+          stageMeta('idMap', idMap());
+        }
+        const listKnown = st.known.punchlistLists;
+        const itemKnown = st.known.punchlistItems;
+        const listSeen = new Set();
+        const itemSeen = new Set();
+        const listOrder = [];
+        const items = [];
+        const listsOnly = !!(opts && opts.listsOnly);
+        // The empty "Default" list the punchlist screen makes when there are
+        // no lists is only a placeholder (as in v169, where it was never
+        // stored): it becomes a stored list once it gets an item, a new name
+        // or a job link.
+        const phKey = st.plPlaceholder;
+        let phSkip = false;
+        if (phKey) {
+          phSkip = isPunchlistPlaceholder(data, phKey);
+          if (!phSkip) st.plPlaceholder = null;
+        }
+        Object.keys(data.jobs).forEach(key => {
+          if (phSkip && key === phKey) return;
+          listSeen.add(key);
+          listOrder.push(key);
+          const ld = plListData(data, key);
+          const json = JSON.stringify(ld);
+          const k = listKnown.get(key);
+          if (!k || k.deleted || k.json !== json) {
+            const leg = st.plLegacy.lists[key];
+            stageRecord('punchlistLists', key, json, ld, (!k && leg) ? { extras: { legacyKey: leg.legacyKey, legacyHadListName: leg.legacyHadListName } } : null);
+          } else k.obj = ld;
+          if (listsOnly) return;
+          let prevPos = -Infinity;
+          (Array.isArray(data.jobs[key]) ? data.jobs[key] : []).forEach(it => {
+            if (!it || typeof it !== 'object') return;
+            const id = String(it.id);
+            if (itemSeen.has(id)) return;
+            itemSeen.add(id);
+            items.push(it);
+            const ik = itemKnown.get(id);
+            // photo: compared by reference first (a 4 MB string is never re-read unless it changed)
+            let photoId = ik && !ik.deleted ? (ik.env.photoId || '') : '';
+            const ph = it.photo;
+            let dataForJson = it;
+            let photoChanged = false;
+            if (isBase64DataUrl(ph)) {
+              if (!(ik && ik.photoRef === ph && photoId)) {
+                if (!photoId) photoId = newEntityId('plp');
+                stagePhotoPut({ id: photoId, dataUrl: ph, ownerKind: 'punchlistItems', ownerId: id, ownerPart: 'photo', createdAt: Date.now() });
+                photoChanged = true;
+              }
+              dataForJson = Object.assign({}, it, { photo: PHOTO_MARK + photoId });
+            } else if (typeof ph === 'string' && ph.indexOf(PHOTO_MARK) === 0) {
+              // photo not loaded into memory yet: unchanged, keep the link
+              photoId = ph.slice(PHOTO_MARK.length);
+              dataForJson = it;
+            } else if (photoId) {
+              photoId = ''; // photo no longer on the item (explicit removal marks the photo deleted separately)
+            }
+            let pos = ik && !ik.deleted && typeof ik.env.position === 'number' ? ik.env.position : null;
+            if (pos == null || pos <= prevPos) pos = (prevPos === -Infinity ? 0 : Math.floor(prevPos) + 1);
+            prevPos = pos;
+            const json2 = JSON.stringify(dataForJson);
+            const envChanged = !ik || ik.deleted || ik.env.listId !== key || ik.env.position !== pos || (ik.env.photoId || '') !== photoId;
+            if (envChanged || ik.json !== json2) {
+              const leg = st.plLegacy.items[id];
+              const extras = { listId: key, position: pos, photoId: photoId || undefined };
+              if (!ik && leg) { extras.legacyId = leg.legacyId; extras.legacyKey = leg.legacyKey; }
+              if (!photoId) extras.photoId = undefined;
+              stageRecord('punchlistItems', id, json2, it, { extras });
+              const nk = itemKnown.get(id);
+              if (!photoId) delete nk.env.photoId;
+            } else {
+              ik.obj = it;
+            }
+            const cur = itemKnown.get(id);
+            cur.photoRef = isBase64DataUrl(ph) ? ph : null;
+            if (photoChanged) {/* photo record staged above */}
+          });
+        });
+        let delLists = 0, delItems = 0;
+        if (!listsOnly) {
+        listKnown.forEach((k, id) => { if (!k.deleted && !listSeen.has(id)) { if (stageDelete('punchlistLists', id)) delLists++; } });
+        itemKnown.forEach((k, id) => { if (!k.deleted && !itemSeen.has(id)) { if (stageDelete('punchlistItems', id)) delItems++; } });
+        if (delLists + delItems > 1) st.stats.multiDeletes.push({ kind: 'punchlist', n: delLists + delItems, lists: delLists, items: delItems, source: currentSource().s, ref: currentSource().ref, at: new Date().toISOString() });
+        }
+        st.arrays.punchlistLists = listOrder.map(k => listKnown.get(k).obj);
+        if (!listsOnly) st.arrays.punchlistItems = items;
+        const order = listOrder.join('\u0001');
+        if (st.orderCache.punchlistLists !== order) { st.orderCache.punchlistLists = order; stageMeta('order:punchlistLists', listOrder); }
+        const cj = (data.currentJob == null || (phSkip && data.currentJob === phKey)) ? '' : data.currentJob;
+        if (st.meta['pl:currentJob'] !== cj) stageMeta('pl:currentJob', cj);
+        const ex = plExtras(data);
+        if (JSON.stringify(st.meta['pl:extras'] || null) !== JSON.stringify(ex)) stageMeta('pl:extras', ex);
+        if (!st.meta['pl:initialized']) stageMeta('pl:initialized', true);
+        flushSoon();
+        return true;
+      }
+      function markPunchlistPlaceholder(key) { st.plPlaceholder = key || null; }
+      // True while `key` is still the untouched placeholder: no items, still
+      // named "Default", no job link, never stored.
+      function isPunchlistPlaceholder(data, key) {
+        if (!key || key !== st.plPlaceholder || !data || !data.jobs) return false;
+        const kbj = data.keyByJobId || {};
+        return Object.prototype.hasOwnProperty.call(data.jobs, key) &&
+          Array.isArray(data.jobs[key]) && data.jobs[key].length === 0 &&
+          (data.listNames || {})[key] === 'Default' &&
+          !Object.prototype.hasOwnProperty.call(data.jobIdByKey || {}, key) &&
+          !Object.keys(kbj).some(j => kbj[j] === key) &&
+          !(st.known.punchlistLists.get(key) && !st.known.punchlistLists.get(key).deleted);
+      }
+      async function loadPunchlistBundle() {
+        const ex = st.meta['pl:extras'] || { listNames: {}, jobIdByKey: {}, keyByJobId: {}, top: {}, topOrder: [] };
+        const lists = st.arrays.punchlistLists;
+        const data = {};
+        const order = (ex.topOrder && ex.topOrder.length) ? ex.topOrder : ['currentJob', 'jobs'];
+        order.forEach(k => {
+          if (k === 'currentJob') data.currentJob = st.meta['pl:currentJob'] || '';
+          else if (k === 'jobs') data.jobs = {};
+          else if (k === 'listNames') data.listNames = {};
+          else if (k === 'jobIdByKey') data.jobIdByKey = {};
+          else if (k === 'keyByJobId') data.keyByJobId = {};
+          else if (k in (ex.top || {})) data[k] = ex.top[k];
+        });
+        if (!('currentJob' in data)) data.currentJob = st.meta['pl:currentJob'] || '';
+        if (!data.jobs) data.jobs = {};
+        const byList = {};
+        st.arrays.punchlistItems.forEach(it => {
+          const k = st.known.punchlistItems.get(String(it.id));
+          const lid = k ? k.env.listId : '';
+          (byList[lid] = byList[lid] || []).push(it);
+        });
+        lists.forEach(ld => {
+          const key = ld.id;
+          data.jobs[key] = byList[key] || [];
+          if (ld.hasListName) { if (!data.listNames) data.listNames = {}; data.listNames[key] = ld.name; }
+          if (ld.jobLinked) { if (!data.jobIdByKey) data.jobIdByKey = {}; data.jobIdByKey[key] = ld.jobId; }
+          (ld.primaryForJobs || []).forEach(j => { if (!data.keyByJobId) data.keyByJobId = {}; data.keyByJobId[j] = key; });
+        });
+        ['listNames', 'jobIdByKey', 'keyByJobId'].forEach(m => {
+          const extra = ex[m] || {};
+          if (Object.keys(extra).length) { if (!data[m]) data[m] = {}; Object.assign(data[m], extra); }
+        });
+        // Photos: every item photo is put back as the exact text it was.
+        const need = [];
+        st.arrays.punchlistItems.forEach(it => {
+          if (typeof it.photo === 'string' && it.photo.indexOf(PHOTO_MARK) === 0) need.push(it);
+        });
+        const marks = need.map(it => it.photo);
+        if (need.length) {
+          const db = await openFs();
+          for (let i = 0; i < need.length; i += 8) {
+            const chunk = need.slice(i, i + 8);
+            const chunkMarks = marks.slice(i, i + 8);
+            const store = db.transaction('photoData', 'readonly').objectStore('photoData');
+            const rows = await Promise.all(chunk.map((it, j) => {
+              const pid = chunkMarks[j].slice(PHOTO_MARK.length);
+              const pend = st.pending.get('p|' + pid);
+              return (pend && pend.t === 'photo') ? pend.payload : reqP(store.get(pid));
+            }));
+            for (let j = 0; j < chunk.length; j++) {
+              const it = chunk[j], row = rows[j], mark = chunkMarks[j];
+              // Only fill in a placeholder that is still the placeholder (another
+              // load, or an edit, may already have put the photo back).
+              if (it.photo !== mark) continue;
+              let full = null;
+              if (row && typeof row.dataUrl === 'string') full = row.dataUrl;
+              else if (row && row.blob) {
+                const m = st.photos.get(mark.slice(PHOTO_MARK.length)) || {};
+                full = 'data:' + (m.type || 'image/jpeg') + ';base64,' + await blobToB64(row.blob);
+              }
+              if (full && it.photo === mark) {
+                it.photo = full;
+                const k = st.known.punchlistItems.get(String(it.id));
+                if (k) k.photoRef = full;
+              } else if (!full) {
+                // Picture data missing: the item keeps its photo reference
+                // (nothing is ever dropped); counted for diagnostics.
+                st.missingPhotoPayloads = (st.missingPhotoPayloads || 0) + 1;
+                console.warn('[storage] punchlist photo data missing', it.id, mark);
+              }
+            }
+          }
+        }
+        return data;
+      }
+      function itemPhotoId(itemId) {
+        const k = st.known.punchlistItems.get(String(itemId));
+        return (k && !k.deleted && k.env.photoId) || '';
+      }
+      function inlinePunchlistPhotoIds() {
+        const out = new Set();
+        st.known.punchlistItems.forEach(k => { if (!k.deleted && k.env.photoId && k.obj && (isBase64DataUrl(k.obj.photo) || (typeof k.obj.photo === 'string' && k.obj.photo.indexOf(PHOTO_MARK) === 0))) out.add(k.env.photoId); });
+        return out;
+      }
+
+      // ---------- edit log / parts-link re-keying ----------
+      function rekeyEditLogEntries(entries, report) {
+        // Re-key punchlist references inside pre-upgrade editor entries so
+        // Undo keeps working. Anything that can't be mapped is marked
+        // "Can't undo — made before the storage upgrade".
+        const map = idMap();
+        const liveItems = st.known.punchlistItems;
+        return (entries || []).map(e => {
+          if (!e || typeof e !== 'object') return e;
+          let touched = false, blocked = false;
+          const mapRow = (row) => {
+            if (!row || typeof row !== 'object' || row.listKey == null) return row;
+            const oldKey = row.listKey;
+            const newKey = isUniqueListKey(oldKey) ? oldKey : map.lists[oldKey];
+            const mk = oldKey + '\u0001' + String(row.id);
+            const newId = isUniqueItemId(row.id) ? row.id : map.items[mk];
+            if (!newKey || !newId) { blocked = true; return row; }
+            if (newKey === oldKey && newId === row.id) return row;
+            touched = true;
+            const r2 = Object.assign({}, row, { listKey: newKey, id: newId });
+            if (row.rec && typeof row.rec === 'object') {
+              const rec = {};
+              Object.keys(row.rec).forEach(f => { rec[f] = f === 'id' ? newId : row.rec[f]; });
+              r2.rec = rec;
+            }
+            return r2;
+          };
+          const out = Object.assign({}, e);
+          ['before', 'after'].forEach(side => {
+            if (out[side] && Array.isArray(out[side].punchlistItems)) {
+              out[side] = Object.assign({}, out[side], { punchlistItems: out[side].punchlistItems.map(mapRow) });
+            }
+          });
+          if (out.affectedIds && Array.isArray(out.affectedIds.punchlistItems)) {
+            out.affectedIds = Object.assign({}, out.affectedIds, { punchlistItems: out.affectedIds.punchlistItems.map(mapRow) });
+          }
+          if (blocked) {
+            // Can't be fully re-keyed: keep the entry exactly as it was and mark
+            // it (an entry that was already undone needs nothing).
+            if (e.undone) return e;
+            if (report) report.blocked++;
+            return Object.assign({}, e, { preUpgradeNoUndo: true });
+          }
+          if (report && touched) report.rekeyed++;
+          return touched ? out : e;
+        });
+      }
+      function rekeyPartsSources(requests, oldBundle, report) {
+        // Parts lines made from a punchlist item store that item's id. Old ids
+        // repeat across lists, so the match goes through the request's job.
+        const map = idMap();
+        const jobIdByKey = (oldBundle && oldBundle.jobIdByKey) || {};
+        const jobs = (oldBundle && oldBundle.jobs) || {};
+        return (requests || []).map(req => {
+          if (!req || typeof req !== 'object' || !Array.isArray(req.parts)) return req;
+          let changed = false;
+          const parts = req.parts.map(p => {
+            if (!p || !p.source || p.source.type !== 'punchlist') return p;
+            const oldId = p.source.id;
+            if (isUniqueItemId(oldId)) return p;
+            const cands = [];
+            Object.keys(jobs).forEach(k => {
+              if (jobIdByKey[k] && jobIdByKey[k] === req.jobId && (jobs[k] || []).some(it => it && String(it.id) === String(oldId))) cands.push(k);
+            });
+            if (cands.length === 1 && map.items[cands[0] + '\u0001' + String(oldId)]) {
+              changed = true;
+              if (report) report.rekeyed++;
+              return Object.assign({}, p, { source: Object.assign({}, p.source, { id: map.items[cands[0] + '\u0001' + String(oldId)] }) });
+            }
+            if (report) report.unmatched.push({ request: req.id, line: p.id, oldItemId: oldId, candidates: cands.length });
+            return p;
+          });
+          return changed ? Object.assign({}, req, { parts }) : req;
+        });
+      }
+
+      // ---------- settings / diagnostics ----------
+      function counts() {
+        const c = {};
+        let deleted = 0;
+        KINDS.forEach(k => {
+          let live = 0;
+          st.known[k].forEach(r => { if (r.deleted) deleted++; else live++; });
+          c[k] = live;
+        });
+        let photos = 0, unowned = 0, photosDeleted = 0;
+        st.photos.forEach(p => {
+          if (p.deletedAt) { photosDeleted++; return; }
+          photos++;
+          if (!p.ownerKind) unowned++;
+        });
+        c.photos = photos; c.unownedPhotos = unowned; c.deleted = deleted + photosDeleted;
+        return c;
+      }
+      function settingsText() {
+        if (st.mode === 'legacy') {
+          return { line: 'Storage v1', warn: st.upgradeFailed ? 'Storage upgrade didn\'t finish — your data is safe; please contact your manager' : '' };
+        }
+        if (st.mode !== 'v2') return { line: '', warn: '' };
+        const c = counts();
+        const pl = (n, w, ws) => n + ' ' + (n === 1 ? w : (ws || (w + 's')));
+        const bits = ['Storage v2',
+          pl(c.jobs, 'job'), pl(c.inspections, 'inspection'),
+          pl(c.punchlistLists, 'punchlist') + ' (' + pl(c.punchlistItems, 'item') + ')',
+          pl(c.partsRequests, 'parts request'), pl(c.timeEntries, 'time entry', 'time entries'),
+          pl(c.photos, 'stored photo') + (c.unownedPhotos ? ' (' + c.unownedPhotos + ' not linked to a record)' : '')];
+        bits.push(c.deleted + ' deleted (kept for sync)');
+        const n = pendingCount();
+        if (n) bits.push(pl(n, 'change') + ' not saved');
+        return {
+          line: bits.join(' · '),
+          warn: st.rollbackWarning ? 'Data was entered in an older version after the storage upgrade — contact your manager' : ''
+        };
+      }
+
+      return {
+        st, KINDS, FRONT_KINDS, LEGACY_LS_DATA_KEYS, LEGACY_KV_DATA_KEYS, PHOTO_MARK,
+        ready, isV2, oldStorageClosed, MARKER_KEY, markerRead, markerWrite, iso, rand6, uuid, hash, syncFp, techName, isBase64DataUrl, dataUrlParts, b64ToBlob, blobToB64,
+        withSource, withSourceSync, currentSource, pushSource, popSource,
+        openFs, metaGet, metaPut, reqP, txDone,
+        saveKind, sweepAllNow, flush, flushSoon, pendingCount,
+        load, save, loadAllIntoMemory, orderRecords,
+        stagePhotoPut, stagePhotoPatch, deletePhotosExplicit, getPhoto, getAllLivePhotos, tagPhotoOwner, photoUnchanged,
+        savePunchlist, loadPunchlistBundle, markPunchlistPlaceholder, isPunchlistPlaceholder, rekeyBundle, resolveLegacyListKey, listLabel, itemPhotoId,
+        inlinePunchlistPhotoIds, isUniqueListKey, isUniqueItemId, idMap,
+        rekeyEditLogEntries, rekeyPartsSources, counts, settingsText, stageMeta, stageRecord, inspectionStoredCopy, storedJson
+      };
+    })();
+    window.__LXS = LXS;
+
+    // v2 STORE dispatch: same per-kind semantics the v169 cases above had
+    // (memory first for the lists that keep a storeMem copy), but backed by
+    // the new storage.
+    const LXS_MEM_KEY = { jobs: 'jobs', customers: 'customers', sites: 'sites', serials: 'serials', machines: 'machines', partsRequests: 'partsRequests', editLog: 'editLog' };
+    // Upgraded phone whose new storage can't be opened: nothing is read
+    // from the old storage; empty values only (the app is behind the
+    // blocking screen and does not start).
+    function lxsClosedLoad(kind) {
+      if (kind === 'punchlist') return Promise.resolve(null);
+      if (kind === 'timecards') return null;
+      if (kind === 'editorSettings') return { pin: '' };
+      return [];
+    }
+    function lxsStoreLoad(kind, opts) {
+      if (LXS_MEM_KEY[kind]) {
+        const mem = Array.isArray(storeMem[LXS_MEM_KEY[kind]]) ? storeMem[LXS_MEM_KEY[kind]] : [];
+        return mem.length ? mem : LXS.load(kind);
+      }
+      if (kind === 'punchlist') return LXS.loadPunchlistBundle();
+      return LXS.load(kind);
+    }
+    function lxsStoreSave(kind, value, opts) {
+      if (kind === 'punchlist') { LXS.savePunchlist(value); return Promise.resolve(true); }
+      if (kind === 'editLog') {
+        storeMem.editLog = Array.isArray(value) ? value : [];
+        return LXS.save('editLog', storeMem.editLog);
+      }
+      return LXS.save(kind, value, opts);
+    }
+
+    // ---------- STORAGE v2: one-time upgrade, boot, rollback check ----------
+    // Old-storage readers. They only ever READ: v169's own open functions are
+    // used so a device that somehow lacks an old database ends up exactly as
+    // v169 itself would have left it (same names, versions, stores).
+    function lxsOpenFieldPunchlistDb() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open('FieldPunchlistDB', 1);
+        req.onupgradeneeded = (e) => {
+          const database = e.target.result;
+          if (!database.objectStoreNames.contains('appdata')) database.createObjectStore('appdata');
+        };
+        req.onsuccess = (e) => resolve(e.target.result);
+        req.onerror = (e) => reject(e.target.error);
+      });
+    }
+    function lxsLsRaw(key) {
+      try { return localStorage.getItem(key); } catch (e) { return null; }
+    }
+    function lxsLsParse(key) {
+      // { present, ok, value } — distinguishes "key missing" from "unreadable"
+      const raw = lxsLsRaw(key);
+      if (raw == null) return { present: false, ok: false, value: undefined };
+      try { return { present: true, ok: true, value: JSON.parse(raw) }; } catch (e) { return { present: true, ok: false, value: undefined }; }
+    }
+    function lxsLegacyGetKv(key) {
+      return idbOpen().then(db => new Promise((resolve, reject) => {
+        const req = db.transaction('kv', 'readonly').objectStore('kv').get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      }));
+    }
+    function lxsLegacyPhotoIds() {
+      return idbOpen().then(db => new Promise((resolve, reject) => {
+        const req = db.transaction('photos', 'readonly').objectStore('photos').getAllKeys();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error);
+      })).catch(() => []);
+    }
+    function lxsLegacyPhoto(id) {
+      return idbOpen().then(db => new Promise((resolve, reject) => {
+        const req = db.transaction('photos', 'readonly').objectStore('photos').get(id);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      }));
+    }
+    // Reads every kind the way v169 shows it (plan section C2).
+    async function lxsReadOldSources(report) {
+      const out = {};
+      const lsOrKv = async (kind, lsKey, kvKey) => {
+        const ls = lxsLsParse(lsKey);
+        if (ls.present && ls.ok && Array.isArray(ls.value)) { report.sources[kind] = 'localStorage ' + lsKey; return ls.value; }
+        if (ls.present && ls.ok && ls.value == null) { report.sources[kind] = 'localStorage ' + lsKey + ' (empty)'; return []; }
+        const kv = await lxsLegacyGetKv(kvKey).catch(() => undefined);
+        if (Array.isArray(kv)) { report.sources[kind] = 'IndexedDB kv ' + kvKey + (ls.present ? ' (localStorage unreadable)' : ' (localStorage missing)'); return kv; }
+        report.sources[kind] = 'none';
+        return [];
+      };
+      out.jobs = await lsOrKv('jobs', 'lx8_jobs', 'jobs');
+      out.customers = await lsOrKv('customers', 'lx8_customers', 'customers');
+      out.sites = await lsOrKv('sites', 'lx8_sites', 'sites');
+      out.serials = await lsOrKv('serials', 'lx8_serials', 'serials');
+      out.machines = await lsOrKv('machines', 'lx8_machines', 'machines');
+      out.partsRequests = await lsOrKv('partsRequests', 'lx8_parts_requests', 'parts_requests');
+      out.editLog = await lsOrKv('editLog', 'lx8_edit_log', 'edit_log');
+      // Inspections: kv first when it isn't empty (exactly v169's bootStorage rule).
+      const kvIns = await lxsLegacyGetKv('inspections').catch(() => null);
+      if (Array.isArray(kvIns) && kvIns.length) { out.inspections = kvIns; report.sources.inspections = 'IndexedDB kv inspections'; }
+      else {
+        const ls = lxsLsParse('lx8_inspections');
+        out.inspections = (ls.ok && Array.isArray(ls.value)) ? ls.value : [];
+        report.sources.inspections = ls.present ? 'localStorage lx8_inspections' : 'none';
+      }
+      const tc = lxsLsParse('lx8_timecards');
+      out.timecards = (tc.ok && tc.value && typeof tc.value === 'object') ? tc.value : null;
+      report.sources.timeEntries = tc.present ? 'localStorage lx8_timecards' : 'none';
+      // Punchlists: exactly plLoadData()'s order of preference.
+      let pl = null;
+      const kvPl = await lxsLegacyGetKv('punchlist_main').catch(() => null);
+      if (kvPl && kvPl.jobs && kvPl.currentJob) { pl = kvPl; report.sources.punchlist = 'IndexedDB kv punchlist_main'; }
+      if (!pl) {
+        try {
+          const fdb = await lxsOpenFieldPunchlistDb();
+          const old = await new Promise((resolve, reject) => {
+            const req = fdb.transaction('appdata', 'readonly').objectStore('appdata').get('main');
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+          });
+          try { fdb.close(); } catch (e) {}
+          if (old && old.jobs && old.currentJob) { pl = old; report.sources.punchlist = 'FieldPunchlistDB main (old database)'; }
+        } catch (e) {}
+      }
+      if (!pl && kvPl && kvPl.jobs && typeof kvPl.jobs === 'object') { pl = kvPl; report.sources.punchlist = 'IndexedDB kv punchlist_main (no current list)'; }
+      if (!pl) {
+        const legacy = lxsLsParse('field_punchlist_v3');
+        if (legacy.ok && legacy.value && legacy.value.jobs) { pl = legacy.value; report.sources.punchlist = 'localStorage field_punchlist_v3'; }
+      }
+      if (!pl) report.sources.punchlist = 'none';
+      out.punchlist = pl;
+      out.photoIds = await lxsLegacyPhotoIds();
+      report.sources.photos = 'IndexedDB lematic-lx8 photos (' + out.photoIds.length + ')';
+      return out;
+    }
+    function lxsCreatedAtFor(kind, rec) {
+      // { iso, from }
+      const tryIso = (v) => { if (v == null || v === '') return null; const d = new Date(typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v + 'T00:00:00' : v); return isNaN(d.getTime()) ? null : d.toISOString(); };
+      if (kind === 'timeEntries') { const v = tryIso(rec && rec.clockIn); if (v) return { iso: v, from: 'clockIn' }; }
+      if (kind === 'editLog') { const v = tryIso(rec && rec.at); if (v) return { iso: v, from: 'at' }; }
+      const c = rec && rec.createdAt;
+      if (typeof c === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(c)) { const v = tryIso(c); if (v) return { iso: v, from: 'date-only' }; }
+      const v = tryIso(c);
+      if (v) return { iso: v, from: 'record' };
+      return { iso: null, from: 'upgrade' };
+    }
+    // Old-storage fingerprint (reviewer change 2). Photo text is summarised by
+    // length + both ends so a 42 MB bundle is hashed in milliseconds.
+    async function lxsOldFingerprint() {
+      const h = LXS.hash;
+      const parts = {};
+      parts.ls = h(LXS.LEGACY_LS_DATA_KEYS.map(k => k + '=' + (lxsLsRaw(k) || '')).join('\u0001'));
+      const summarise = (v) => JSON.stringify(v, (k, x) => (typeof x === 'string' && x.length > 4096) ? ('#' + x.length + ':' + x.slice(0, 96) + x.slice(-96)) : x);
+      const kvPl = await lxsLegacyGetKv('punchlist_main').catch(() => null);
+      // "which list is open" is a device setting, not data: switching lists
+      // in the older version must not count as entering data
+      const kvPlData = (kvPl && typeof kvPl === 'object') ? Object.assign({}, kvPl, { currentJob: undefined }) : kvPl;
+      parts.kvPunchlist = h(summarise(kvPlData == null ? null : kvPlData));
+      const kvIns = await lxsLegacyGetKv('inspections').catch(() => null);
+      parts.kvInspections = h(summarise(kvIns == null ? null : kvIns));
+      const ids = (await lxsLegacyPhotoIds()).map(String).sort();
+      parts.photoIds = h(ids.join('\u0001'));
+      return parts;
+    }
+
+    async function lxsRunUpgrade() {
+      const t0 = performance.now();
+      const report = {
+        startedAt: new Date().toISOString(), sources: {}, counts: {}, skipped: [], duplicates: [],
+        punchlist: { lists: 0, items: 0, photos: 0, rekeyedLists: [], rekeyedItems: 0, nonDataUrlPhotos: 0 },
+        partsLinks: { rekeyed: 0, unmatched: [] }, editLog: { rekeyed: 0, blocked: 0 },
+        photos: { copied: 0, unowned: 0 }, createdAtFrom: {}, lastPunchlist: null, ms: 0, verified: false
+      };
+      LXS.st.upgradeReport = report;
+      const db = await LXS.openFs();
+      const deviceId = LXS.st.deviceId;
+      const who = LXS.techName();
+      const old = await lxsReadOldSources(report);
+
+      // Space check: the copy needs roughly as much room again as is used now.
+      try {
+        if (navigator.storage && navigator.storage.estimate) {
+          const est = await navigator.storage.estimate();
+          if (est && est.quota && est.usage != null && (est.quota - est.usage) < est.usage * 1.05) {
+            const e = new Error('not-enough-space'); e.name = 'QuotaExceededError'; throw e;
+          }
+        }
+      } catch (e) { if (e && e.message === 'not-enough-space') throw e; }
+
+      // Old→new id map: saved BEFORE anything is copied so a rerun reuses it.
+      const savedMap = await LXS.metaGet('idMap');
+      LXS.st.meta.idMap = savedMap && savedMap.lists ? savedMap : { lists: {}, items: {} };
+      // The first attempt's start time is reused by any re-run, so records
+      // with no date of their own get the same createdAt every time.
+      let firstStart = await LXS.metaGet('upgradeFirstStartedAt');
+      if (!firstStart) { firstStart = report.startedAt; await LXS.metaPut('upgradeFirstStartedAt', firstStart); }
+      let rk = null;
+      if (old.punchlist) {
+        rk = LXS.rekeyBundle(old.punchlist);
+      }
+      await LXS.metaPut('idMap', LXS.idMap());
+
+      // Start from a clean new copy each attempt (meta — id map, device id — is kept).
+      {
+        const tx = db.transaction(['records', 'photos', 'photoData'], 'readwrite');
+        tx.objectStore('records').clear();
+        tx.objectStore('photos').clear();
+        tx.objectStore('photoData').clear();
+        await LXS.txDone(tx);
+      }
+
+      // References that point at re-keyed punchlist items/lists.
+      const partsReport = report.partsLinks;
+      const partsRequests = LXS.rekeyPartsSources(old.partsRequests, old.punchlist, partsReport);
+      // Edit log needs the item map → computed after rekeyBundle above.
+      const editLog = LXS.rekeyEditLogEntries(old.editLog, report.editLog);
+
+      const nowIso = firstStart;
+      const envFor = (kind, id, rec, extras) => {
+        const c = lxsCreatedAtFor(kind, rec);
+        report.createdAtFrom[c.from] = (report.createdAtFrom[c.from] || 0) + 1;
+        const createdAt = c.iso || nowIso;
+        let updatedAt = createdAt;
+        if (rec && typeof rec.updatedAt === 'string') { const d = new Date(rec.updatedAt); if (!isNaN(d.getTime())) updatedAt = d.toISOString(); }
+        const env = { kind, id, createdAt, updatedAt, updatedBy: who, deviceId, deletedAt: null, changeSource: 'upgrade', changeRef: '', createdAtFrom: c.from };
+        if (kind === 'jobs' && id === 'job_sample_demo') env.sample = true;
+        if (kind === 'inspections' && id === 'ins_example_orangeburg') env.sample = true;
+        if (kind === 'timeEntries' && String(id).indexOf('tc_sample_') === 0) env.sample = true;
+        if (extras) Object.assign(env, extras);
+        return env;
+      };
+      // Prepare simple kinds: null/empty entries skipped; duplicate ids get a new id.
+      const plan = {}; // kind -> [{ id, json, rec, sourceIndex, renamedFrom }]
+      const simple = {
+        jobs: old.jobs, inspections: old.inspections, partsRequests, customers: old.customers, sites: old.sites,
+        machines: old.machines, serials: old.serials, editLog,
+        timeEntries: (old.timecards && Array.isArray(old.timecards.entries)) ? old.timecards.entries : []
+      };
+      Object.keys(simple).forEach(kind => {
+        const rows = [];
+        const seen = new Set();
+        (Array.isArray(simple[kind]) ? simple[kind] : []).forEach((rec, i) => {
+          if (!rec || typeof rec !== 'object') { report.skipped.push({ kind, index: i, why: 'empty entry' }); return; }
+          if (rec.id == null || rec.id === '') { report.skipped.push({ kind, index: i, why: 'no id' }); return; }
+          let id = String(rec.id);
+          let renamedFrom = null;
+          let r = rec;
+          if (seen.has(id)) {
+            renamedFrom = id;
+            const prefix = (id.match(/^([a-z]+)_/i) || [])[1] || kind.slice(0, 3);
+            id = newEntityId(prefix);
+            r = Object.assign({}, rec, { id });
+            report.duplicates.push({ kind, oldId: renamedFrom, newId: id });
+          }
+          seen.add(id);
+          const json = kind === 'inspections' ? LXS.storedJson('inspections', r) : JSON.stringify(r);
+          rows.push({ id, json, rec: r, sourceIndex: i, renamedFrom });
+        });
+        plan[kind] = rows;
+      });
+      // Write simple kinds in batches.
+      for (const kind of Object.keys(plan)) {
+        const rows = plan[kind];
+        for (let i = 0; i < rows.length; i += 200) {
+          const tx = db.transaction('records', 'readwrite');
+          const s = tx.objectStore('records');
+          rows.slice(i, i + 200).forEach(row => s.put(Object.assign(envFor(kind, row.id, row.rec), { json: row.json })));
+          await LXS.txDone(tx);
+        }
+        const meta = db.transaction('meta', 'readwrite');
+        meta.objectStore('meta').put(rows.map(r => r.id), 'order:' + kind);
+        await LXS.txDone(meta);
+        report.counts[kind] = rows.length;
+      }
+      await LXS.metaPut('tc:active', (old.timecards && old.timecards.active) || null);
+
+      // Photo owners from references in the data being copied.
+      const owners = new Map();
+      plan.inspections.forEach(row => {
+        const ins = row.rec;
+        if (ins.results && typeof ins.results === 'object') Object.keys(ins.results).forEach(k => {
+          const r = ins.results[k]; if (r && r.photoId && !owners.has(r.photoId)) owners.set(r.photoId, { ownerKind: 'inspections', ownerId: row.id, ownerPart: 'result:' + k });
+        });
+        (Array.isArray(ins.findings) ? ins.findings : []).forEach((f, i) => {
+          if (f && f.photoId && !owners.has(f.photoId)) owners.set(f.photoId, { ownerKind: 'inspections', ownerId: row.id, ownerPart: 'finding:' + i });
+        });
+      });
+      plan.partsRequests.forEach(row => {
+        (Array.isArray(row.rec.parts) ? row.rec.parts : []).forEach(p => {
+          if (p && p.photoId && !owners.has(p.photoId)) owners.set(p.photoId, { ownerKind: 'partsRequests', ownerId: row.id, ownerPart: 'line:' + (p.id || '') });
+        });
+      });
+      // Existing photos: one at a time (bytes copied as-is).
+      for (const pid of old.photoIds) {
+        const rec = await lxsLegacyPhoto(pid);
+        if (!rec) continue;
+        const o = owners.get(pid) || { ownerKind: '', ownerId: '', ownerPart: '' };
+        if (!o.ownerKind) report.photos.unowned++;
+        const blob = rec.blob instanceof Blob ? rec.blob : new Blob([rec.blob || ''], { type: 'image/jpeg' });
+        const row = {
+          id: String(rec.id), type: blob.type || 'image/jpeg', size: blob.size, storedAs: 'blob', caption: rec.caption || '',
+          ownerKind: o.ownerKind, ownerId: o.ownerId, ownerPart: o.ownerPart,
+          createdAt: LXS.iso(rec.createdAt), updatedAt: LXS.iso(rec.createdAt), updatedBy: who, deviceId,
+          deletedAt: null, changeSource: 'upgrade', changeRef: ''
+        };
+        const tx = db.transaction(['photos', 'photoData'], 'readwrite');
+        tx.objectStore('photos').put(row);
+        tx.objectStore('photoData').put({ id: row.id, blob });
+        await LXS.txDone(tx);
+        report.photos.copied++;
+      }
+
+      // Punchlists: one list and one photo at a time.
+      if (rk) {
+        const src = old.punchlist;
+        const nb = rk.bundle;
+        const oldKeys = Object.keys(src.jobs || {});
+        const listOrder = [];
+        for (const oldKey of oldKeys) {
+          const newKey = rk.keyMap[oldKey];
+          listOrder.push(newKey);
+          const ld = (function () {
+            const listNames = nb.listNames || {}, jobIdByKey = nb.jobIdByKey || {}, keyByJobId = nb.keyByJobId || {};
+            const hasListName = Object.prototype.hasOwnProperty.call(listNames, newKey);
+            const jobLinked = Object.prototype.hasOwnProperty.call(jobIdByKey, newKey);
+            return { id: newKey, name: hasListName ? listNames[newKey] : null, hasListName, jobLinked, jobId: jobLinked ? jobIdByKey[newKey] : null,
+              primaryForJobs: Object.keys(keyByJobId).filter(j => keyByJobId[j] === newKey) };
+          })();
+          const lextras = {};
+          if (newKey !== oldKey) {
+            lextras.legacyKey = oldKey;
+            lextras.legacyHadListName = !!(src.listNames && Object.prototype.hasOwnProperty.call(src.listNames, oldKey));
+            report.punchlist.rekeyedLists.push(oldKey);
+          }
+          {
+            const tx = db.transaction('records', 'readwrite');
+            tx.objectStore('records').put(Object.assign(envFor('punchlistLists', newKey, {}, lextras), { json: JSON.stringify(ld) }));
+            await LXS.txDone(tx);
+          }
+          report.punchlist.lists++;
+          const items = Array.isArray(nb.jobs[newKey]) ? nb.jobs[newKey] : [];
+          const oldItems = Array.isArray(src.jobs[oldKey]) ? src.jobs[oldKey] : [];
+          let pos = 0;
+          for (let i = 0; i < items.length; i++) {
+            const it = items[i];
+            if (!it || typeof it !== 'object') { report.skipped.push({ kind: 'punchlistItems', list: oldKey, index: i, why: 'empty entry' }); continue; }
+            const oldIt = oldItems[i];
+            const extras = { listId: newKey, position: pos++ };
+            if (oldIt && oldIt.id !== it.id) { extras.legacyId = oldIt.id; extras.legacyKey = oldKey; report.punchlist.rekeyedItems++; }
+            let dataForJson = it;
+            if (LXS.isBase64DataUrl(it.photo)) {
+              // The photo moves to the photo store as the exact text it was.
+              const pid = (LXS.idMap().photos && LXS.idMap().photos[String(it.id)]) || newEntityId('plp');
+              if (!LXS.idMap().photos) LXS.idMap().photos = {};
+              LXS.idMap().photos[String(it.id)] = pid;
+              const b64len = it.photo.length - it.photo.indexOf(',') - 1;
+              const pad = it.photo.endsWith('==') ? 2 : (it.photo.endsWith('=') ? 1 : 0);
+              const prow = {
+                id: pid, type: ((it.photo.match(/^data:([^;,]+)/) || [])[1]) || 'image/jpeg', size: Math.floor(b64len * 3 / 4) - pad, storedAs: 'dataUrl', caption: '',
+                ownerKind: 'punchlistItems', ownerId: String(it.id), ownerPart: 'photo',
+                createdAt: (lxsCreatedAtFor('punchlistItems', it).iso || nowIso), updatedAt: nowIso, updatedBy: who, deviceId,
+                deletedAt: null, changeSource: 'upgrade', changeRef: ''
+              };
+              const tx = db.transaction(['photos', 'photoData'], 'readwrite');
+              tx.objectStore('photos').put(prow);
+              tx.objectStore('photoData').put({ id: pid, dataUrl: it.photo });
+              await LXS.txDone(tx);
+              extras.photoId = pid;
+              dataForJson = Object.assign({}, it, { photo: LXS.PHOTO_MARK + pid });
+              report.punchlist.photos++;
+            } else if (typeof it.photo === 'string' && it.photo) {
+              report.punchlist.nonDataUrlPhotos++;
+            }
+            const tx = db.transaction('records', 'readwrite');
+            tx.objectStore('records').put(Object.assign(envFor('punchlistItems', String(it.id), it, extras), { json: JSON.stringify(dataForJson) }));
+            await LXS.txDone(tx);
+            report.punchlist.items++;
+          }
+        }
+        const tx = db.transaction('meta', 'readwrite');
+        const ms = tx.objectStore('meta');
+        ms.put(listOrder, 'order:punchlistLists');
+        ms.put(nb.currentJob == null ? '' : nb.currentJob, 'pl:currentJob');
+        // dangling lookup entries / unknown top-level fields, so nothing is lost
+        const jobsNew = nb.jobs || {};
+        const ex = { listNames: {}, jobIdByKey: {}, keyByJobId: {}, top: {}, topOrder: Object.keys(src) };
+        Object.keys(nb.listNames || {}).forEach(k => { if (!(k in jobsNew)) ex.listNames[k] = nb.listNames[k]; });
+        Object.keys(nb.jobIdByKey || {}).forEach(k => { if (!(k in jobsNew)) ex.jobIdByKey[k] = nb.jobIdByKey[k]; });
+        Object.keys(nb.keyByJobId || {}).forEach(j => { if (!(nb.keyByJobId[j] in jobsNew)) ex.keyByJobId[j] = nb.keyByJobId[j]; });
+        Object.keys(src).forEach(k => { if (['jobs', 'currentJob', 'listNames', 'jobIdByKey', 'keyByJobId'].indexOf(k) < 0) ex.top[k] = src[k]; });
+        ms.put(ex, 'pl:extras');
+        ms.put(true, 'pl:initialized');
+        ms.put(LXS.idMap(), 'idMap');
+        await LXS.txDone(tx);
+      }
+
+      // ---------------- verification ----------------
+      const vfail = (msg) => { const e = new Error('verify: ' + msg); e.verify = true; throw e; };
+      const readKind = async (kind) => {
+        const tx = db.transaction('records', 'readonly');
+        const rows = await LXS.reqP(tx.objectStore('records').index('kind').getAll(kind));
+        const m = new Map();
+        rows.forEach(r => m.set(r.id, r));
+        return m;
+      };
+      // inverse transforms for re-keyed references
+      const invItem = {};
+      Object.keys(LXS.idMap().items).forEach(mk => { const parts = mk.split('\u0001'); invItem[LXS.idMap().items[mk]] = { key: parts[0], id: parts.slice(1).join('\u0001') }; });
+      const invList = {};
+      Object.keys(LXS.idMap().lists).forEach(k => { invList[LXS.idMap().lists[k]] = k; });
+      for (const kind of Object.keys(plan)) {
+        const stored = await readKind(kind);
+        const srcRows = plan[kind];
+        if (stored.size !== srcRows.length) vfail(kind + ' count ' + stored.size + ' vs ' + srcRows.length);
+        const original = simple[kind];
+        for (const row of srcRows) {
+          const r = stored.get(row.id);
+          if (!r) vfail(kind + ' missing ' + row.id);
+          if (r.json !== row.json) vfail(kind + ' differs ' + row.id);
+          // compare with the ORIGINAL source record (before reference re-keying)
+          let back = JSON.parse(r.json);
+          if (row.renamedFrom) back.id = original[row.sourceIndex].id;
+          if (kind === 'partsRequests' && Array.isArray(back.parts)) {
+            back.parts = back.parts.map(p => (p && p.source && p.source.type === 'punchlist' && invItem[p.source.id])
+              ? Object.assign({}, p, { source: Object.assign({}, p.source, { id: lxsCoerceOldId(invItem[p.source.id].id) }) }) : p);
+          }
+          if (kind === 'editLog') back = old.editLog[row.sourceIndex] && lxsUnrekeyEditEntry(back, invList, invItem);
+          const srcRec = kind === 'partsRequests' ? old.partsRequests[row.sourceIndex] : kind === 'editLog' ? old.editLog[row.sourceIndex] : original[row.sourceIndex];
+          const a = kind === 'inspections' ? LXS.storedJson('inspections', back) : JSON.stringify(back);
+          const b = kind === 'inspections' ? LXS.storedJson('inspections', srcRec) : JSON.stringify(srcRec);
+          if (a !== b) vfail(kind + ' field mismatch ' + row.id);
+        }
+      }
+      // time-card active clock-in
+      if (JSON.stringify(await LXS.metaGet('tc:active')) !== JSON.stringify((old.timecards && old.timecards.active) || null)) vfail('active clock-in');
+      // existing photos: byte-identical, one at a time
+      const sameBytes = async (a, b) => {
+        if (!a || !b || a.size !== b.size) return false;
+        const [x, y] = await Promise.all([a.arrayBuffer(), b.arrayBuffer()]);
+        const u = new Uint8Array(x), v = new Uint8Array(y);
+        for (let i = 0; i < u.length; i++) if (u[i] !== v[i]) return false;
+        return true;
+      };
+      for (const pid of old.photoIds) {
+        const o = await lxsLegacyPhoto(pid);
+        if (!o) continue;
+        const n = await LXS.reqP(db.transaction('photoData', 'readonly').objectStore('photoData').get(String(pid)));
+        const nm = await LXS.reqP(db.transaction('photos', 'readonly').objectStore('photos').get(String(pid)));
+        if (!n || !nm) vfail('photo missing ' + pid);
+        const ob = o.blob instanceof Blob ? o.blob : new Blob([o.blob || ''], { type: 'image/jpeg' });
+        if (!(await sameBytes(ob, n.blob))) vfail('photo bytes ' + pid);
+      }
+      // punchlists: rebuild each old list from the new storage and compare
+      // every item character for character (photo text included), one at a time.
+      if (old.punchlist) {
+        const src = old.punchlist;
+        const lists = await readKind('punchlistLists');
+        const items = await readKind('punchlistItems');
+        const byList = {};
+        items.forEach(r => { (byList[r.listId] = byList[r.listId] || []).push(r); });
+        Object.keys(byList).forEach(k => byList[k].sort((a, b) => a.position - b.position));
+        const order = await LXS.metaGet('order:punchlistLists');
+        const oldKeys = Object.keys(src.jobs || {});
+        if (!Array.isArray(order) || order.length !== oldKeys.length) vfail('punchlist list count');
+        for (let li = 0; li < oldKeys.length; li++) {
+          const oldKey = oldKeys[li];
+          const newKey = order[li];
+          const lrec = lists.get(newKey);
+          if (!lrec) vfail('punchlist list missing ' + oldKey);
+          if ((lrec.legacyKey || newKey) !== oldKey) vfail('punchlist list order/key ' + oldKey);
+          const want = (Array.isArray(src.jobs[oldKey]) ? src.jobs[oldKey] : []).filter(x => x && typeof x === 'object');
+          const got = byList[newKey] || [];
+          if (want.length !== got.length) vfail('punchlist item count ' + oldKey);
+          for (let i = 0; i < want.length; i++) {
+            const r = got[i];
+            const obj = JSON.parse(r.json);
+            const rebuilt = {};
+            Object.keys(obj).forEach(f => { rebuilt[f] = f === 'id' ? (r.legacyId !== undefined ? r.legacyId : obj.id) : obj[f]; });
+            if (r.photoId) {
+              const prow = await LXS.reqP(db.transaction('photoData', 'readonly').objectStore('photoData').get(r.photoId));
+              const pmeta = await LXS.reqP(db.transaction('photos', 'readonly').objectStore('photos').get(r.photoId));
+              if (!prow || typeof prow.dataUrl !== 'string' || !pmeta) vfail('punchlist photo missing ' + r.id);
+              rebuilt.photo = prow.dataUrl;
+            }
+            if (JSON.stringify(rebuilt) !== JSON.stringify(want[i])) vfail('punchlist item differs ' + oldKey + ' #' + (i + 1));
+          }
+        }
+        // lookup tables (order of entries in these has no meaning)
+        const canon = (o) => JSON.stringify(Object.keys(o || {}).sort().map(k => [k, o[k]]));
+        const rebuiltNames = {}, rebuiltLinks = {}, rebuiltPrimary = {};
+        const ex = await LXS.metaGet('pl:extras') || {};
+        lists.forEach(l => {
+          const ld = JSON.parse(l.json);
+          const oldKey = l.legacyKey || l.id;
+          const hadName = l.legacyKey ? l.legacyHadListName : ld.hasListName;
+          if (hadName) rebuiltNames[oldKey] = ld.name;
+          if (ld.jobLinked) rebuiltLinks[oldKey] = ld.jobId;
+          (ld.primaryForJobs || []).forEach(j => { rebuiltPrimary[j] = oldKey; });
+        });
+        Object.keys(ex.listNames || {}).forEach(k => { rebuiltNames[invList[k] || k] = ex.listNames[k]; });
+        Object.keys(ex.jobIdByKey || {}).forEach(k => { rebuiltLinks[invList[k] || k] = ex.jobIdByKey[k]; });
+        Object.keys(ex.keyByJobId || {}).forEach(j => { rebuiltPrimary[j] = invList[ex.keyByJobId[j]] || ex.keyByJobId[j]; });
+        if (src.listNames && canon(rebuiltNames) !== canon(src.listNames)) vfail('punchlist names');
+        if (src.jobIdByKey && canon(rebuiltLinks) !== canon(src.jobIdByKey)) vfail('punchlist job links');
+        if (src.keyByJobId && canon(rebuiltPrimary) !== canon(src.keyByJobId)) vfail('punchlist main-list pointers');
+        const cj = await LXS.metaGet('pl:currentJob');
+        if ((invList[cj] || cj) !== (src.currentJob == null ? '' : src.currentJob)) vfail('punchlist current list');
+      }
+      report.verified = true;
+
+      // Remember what the old storage looked like at the switch.
+      const fp = await lxsOldFingerprint();
+      await LXS.metaPut('oldFingerprint', fp);
+      report.ms = Math.round(performance.now() - t0);
+      report.finishedAt = new Date().toISOString();
+      // The switch: one write.
+      {
+        const tx = db.transaction('meta', 'readwrite');
+        const ms = tx.objectStore('meta');
+        ms.put(report, 'upgradeReport');
+        ms.put(2, 'storageVersion');
+        ms.delete('upgradeError');
+        await LXS.txDone(tx);
+      }
+      // From here on this phone counts as upgraded: it never goes back to
+      // the old storage, even if the new storage can't be opened later.
+      LXS.markerWrite(LXS.st.deviceId);
+      LXS.st.upgradedDevice = true;
+      // Device setting: last-opened punchlist follows its list's new id.
+      try {
+        const raw = localStorage.getItem('lx8_last_punchlist');
+        if (raw != null) {
+          let val; let quoted = true;
+          try { val = JSON.parse(raw); } catch (e) { val = raw; quoted = false; }
+          const mapped = LXS.idMap().lists[val];
+          if (mapped) {
+            localStorage.setItem('lx8_last_punchlist', quoted ? JSON.stringify(mapped) : mapped);
+            report.lastPunchlist = { from: val, to: mapped };
+          }
+        }
+      } catch (e) {}
+      return report;
+    }
+    function lxsUnrekeyEditEntry(entry, invList, invItem) {
+      // inverse of LXS.rekeyEditLogEntries (verification only)
+      if (!entry || typeof entry !== 'object') return entry;
+      const out = Object.assign({}, entry);
+      delete out.preUpgradeNoUndo;
+      const back = (row) => {
+        if (!row || typeof row !== 'object' || row.listKey == null) return row;
+        const inv = invItem[row.id];
+        const oldKey = invList[row.listKey] || row.listKey;
+        if (!inv) return row;
+        const r2 = Object.assign({}, row, { listKey: oldKey, id: lxsCoerceOldId(inv.id, row) });
+        if (row.rec && typeof row.rec === 'object') {
+          const rec = {};
+          Object.keys(row.rec).forEach(f => { rec[f] = f === 'id' ? lxsCoerceOldId(inv.id, row) : row.rec[f]; });
+          r2.rec = rec;
+        }
+        return r2;
+      };
+      ['before', 'after'].forEach(side => {
+        if (out[side] && Array.isArray(out[side].punchlistItems)) out[side] = Object.assign({}, out[side], { punchlistItems: out[side].punchlistItems.map(back) });
+      });
+      if (out.affectedIds && Array.isArray(out.affectedIds.punchlistItems)) out.affectedIds = Object.assign({}, out.affectedIds, { punchlistItems: out.affectedIds.punchlistItems.map(back) });
+      return out;
+    }
+    function lxsCoerceOldId(idStr, row) {
+      // the map key holds String(oldId); numbers were numbers before
+      return /^-?\d+$/.test(idStr) ? Number(idStr) : idStr;
+    }
+
+    let lxsOverlayEl = null;
+    function lxsShowUpgradeOverlay() {
+      if (lxsOverlayEl) return;
+      const el = document.createElement('div');
+      el.id = 'lxsUpgradeOverlay';
+      el.setAttribute('role', 'status');
+      el.style.cssText = 'position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;' +
+        'background:var(--bg,#000);color:var(--text,#e8eef2);font:600 17px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;';
+      el.textContent = 'Upgrading storage…';
+      document.body.appendChild(el);
+      lxsOverlayEl = el;
+    }
+    function lxsHideUpgradeOverlay() {
+      if (lxsOverlayEl) { lxsOverlayEl.remove(); lxsOverlayEl = null; }
+    }
+    async function lxsRollbackCheck() {
+      // Reviewer change 2: if the frozen old storage changed after the switch
+      // (an older version was used again), keep using the new storage and say so.
+      try {
+        const saved = await LXS.metaGet('oldFingerprint');
+        if (!saved) return;
+        const now = await lxsOldFingerprint();
+        const changed = Object.keys(saved).filter(k => saved[k] !== now[k]);
+        if (changed.length) {
+          LXS.st.rollbackWarning = true;
+          LXS.st.rollbackChanged = changed;
+          if (!(await LXS.metaGet('rollbackDetectedAt'))) await LXS.metaPut('rollbackDetectedAt', new Date().toISOString());
+          toast('Data was entered in an older version after the storage upgrade — contact your manager', 8000);
+          try { refreshStorageCard(); } catch (e) {}
+        }
+      } catch (e) { console.warn('[storage] rollback check failed', e); }
+    }
+    function lxsWithLock(fn) {
+      try {
+        if (navigator.locks && navigator.locks.request) return navigator.locks.request('lematic-fs-upgrade', { mode: 'exclusive' }, fn);
+      } catch (e) {}
+      return fn();
+    }
+    // ---------- blocking screens (upgraded phone, new storage not usable) ----------
+    const LXS_BLOCK_TEXT = {
+      cantOpen: 'Can’t open your saved work right now. Nothing has been lost. Close the app completely and open it again.',
+      missing: 'Your saved work wasn’t found on this phone. Nothing has been changed. Don’t enter any work — contact your manager before using the app.'
+    };
+    let lxsBlockEl = null;
+    function lxsBlock(reason, err) {
+      const st = LXS.st;
+      st.mode = 'blocked';
+      st.blockedReason = reason;
+      if (err) st.blockedError = String((err && (err.name + ': ' + err.message)) || err);
+      console.warn('[storage] blocked:', reason, st.blockedError || '');
+      lxsHideUpgradeOverlay();
+      const show = () => {
+        if (lxsBlockEl) lxsBlockEl.remove();
+        const el = document.createElement('div');
+        el.id = 'lxsBlockedOverlay';
+        el.setAttribute('role', 'alertdialog');
+        el.setAttribute('aria-modal', 'true');
+        el.dataset.reason = reason;
+        el.style.cssText = 'position:fixed;inset:0;z-index:100001;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;box-sizing:border-box;text-align:center;' +
+          'background:var(--bg,#000);color:var(--text,#e8eef2);font:600 17px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;';
+        const msg = document.createElement('div');
+        msg.id = 'lxsBlockedText';
+        msg.style.cssText = 'max-width:340px;';
+        msg.textContent = LXS_BLOCK_TEXT[reason] || LXS_BLOCK_TEXT.cantOpen;
+        el.appendChild(msg);
+        const btnCss = 'min-width:200px;padding:13px 20px;border-radius:12px;border:0;font:600 16px/1.2 inherit;font-family:inherit;cursor:pointer;';
+        if (reason === 'missing') {
+          const rb = document.createElement('button');
+          rb.id = 'lxsBlockedRestore'; rb.type = 'button';
+          rb.textContent = 'Restore a backup';
+          rb.style.cssText = btnCss + 'background:var(--accent,#0a84ff);color:#fff;';
+          const inp = document.createElement('input');
+          inp.type = 'file'; inp.accept = '.zip,application/zip'; inp.id = 'lxsBlockedRestoreInput'; inp.style.display = 'none';
+          rb.addEventListener('click', () => inp.click());
+          inp.addEventListener('change', () => { const f = inp.files && inp.files[0]; inp.value = ''; if (f) lxsRestoreFromBlocked(f); });
+          const note = document.createElement('div');
+          note.id = 'lxsBlockedNote';
+          note.style.cssText = 'max-width:340px;font-weight:400;font-size:14px;opacity:.8;min-height:1.4em;';
+          el.appendChild(rb); el.appendChild(inp); el.appendChild(note);
+        }
+        const tb = document.createElement('button');
+        tb.id = 'lxsBlockedRetry'; tb.type = 'button';
+        tb.textContent = 'Try again';
+        tb.style.cssText = btnCss + (reason === 'missing' ? 'background:transparent;color:var(--text,#e8eef2);border:1px solid currentColor;' : 'background:var(--accent,#0a84ff);color:#fff;');
+        tb.addEventListener('click', () => { try { location.reload(); } catch (e) {} });
+        el.appendChild(tb);
+        (document.body || document.documentElement).appendChild(el);
+        lxsBlockEl = el;
+      };
+      if (document.body) show(); else document.addEventListener('DOMContentLoaded', show, { once: true });
+    }
+    // Marker present but the new storage is empty: the technician can put
+    // their work back from a backup zip right from the blocking screen.
+    // The new storage is used for this (never the old one); the app starts
+    // behind the screen on the empty new storage, the backup is restored
+    // into it the normal way, and only when that restore succeeds is the
+    // new storage marked ready and the app reopened.
+    let lxsRestoring = false;
+    async function lxsRestoreFromBlocked(file) {
+      if (lxsRestoring) return;
+      lxsRestoring = true;
+      const st = LXS.st;
+      const note = document.getElementById('lxsBlockedNote');
+      const say = (t) => { if (note) note.textContent = t; };
+      say('Restoring backup…');
+      try {
+        const mk = LXS.markerRead() || {};
+        if (st.mode === 'blocked') {
+          await LXS.openFs();
+          let deviceId = await LXS.metaGet('deviceId');
+          if (!deviceId) { deviceId = mk.deviceId || (function () { try { return localStorage.getItem('lx8_device_id'); } catch (e) { return ''; } })() || ('dev_' + LXS.uuid()); await LXS.metaPut('deviceId', deviceId); }
+          st.deviceId = deviceId;
+          await LXS.loadAllIntoMemory();
+          st.mode = 'v2';
+          st.blockedRestore = true;
+          st.readyResolve(st.mode);
+          // let the app finish starting (behind this screen) before restoring
+          await new Promise(r => setTimeout(r, 1500));
+        }
+        await importBackupZip(file);
+        const t = ((document.getElementById('toast') || {}).textContent || '').trim();
+        const ok = /^(Backup restored|Inspections restored)/.test(t);
+        if (!ok) { say(t && t !== 'Restoring backup…' ? t + ' — nothing was changed. Try another backup or contact your manager.' : 'Restore didn’t finish. Contact your manager.'); lxsRestoring = false; return; }
+        LXS.sweepAllNow();
+        await LXS.flush();
+        if (LXS.pendingCount()) throw new Error('not-saved');
+        {
+          const db = await LXS.openFs();
+          const tx = db.transaction('meta', 'readwrite');
+          tx.objectStore('meta').put(2, 'storageVersion');
+          tx.objectStore('meta').put({ at: new Date().toISOString(), file: String(file && file.name || '') }, 'restoredWhileBlocked');
+          await LXS.txDone(tx);
+        }
+        LXS.markerWrite(st.deviceId);
+        say(t);
+        setTimeout(() => { try { location.reload(); } catch (e) {} }, 1200);
+      } catch (e) {
+        console.warn('[storage] restore from blocked screen failed', e);
+        say('Restore didn’t finish. Contact your manager.');
+        lxsRestoring = false;
+      }
+    }
+    function lxsTimeout(p, ms) {
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('fs-timeout')), ms);
+        p.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+      });
+    }
+    async function lxsReadHead() {
+      const db = await LXS.openFs();
+      const tx = db.transaction('meta', 'readonly');
+      const ms = tx.objectStore('meta');
+      const [v, d] = await Promise.all([LXS.reqP(ms.get('storageVersion')), LXS.reqP(ms.get('deviceId'))]);
+      return { v, d };
+    }
+    function lxsEnterV2Extras() {
+      const st = LXS.st;
+      try {
+        st.bc = new BroadcastChannel('lematic-fs');
+        st.bc.onmessage = (ev) => {
+          const m = ev && ev.data;
+          if (m && m.from !== st.tabId && Array.isArray(m.kinds)) m.kinds.forEach(k => st.stale.add(k));
+        };
+      } catch (e) {}
+      // keep the "upgraded" marker in place (written at the switch)
+      if (!LXS.markerRead()) LXS.markerWrite(st.deviceId);
+      st.upgradedDevice = true;
+    }
+    async function lxsBoot() {
+      const st = LXS.st;
+      const t0 = performance.now();
+      // An upgraded phone is one with the marker, or whose new storage says
+      // version 2. It never runs on the old storage.
+      let upgraded = st.upgradedDevice;
+      // If a phone that was already upgraded before this launch hasn't
+      // finished starting after ~10 s, it shows the blocking screen instead
+      // of waiting forever. (A first-time upgrade can take longer and keeps
+      // its "Upgrading storage…" screen, as before.)
+      const watchdog = setTimeout(() => {
+        if (st.mode === 'pending' && upgraded) lxsBlock('cantOpen', new Error('boot-timeout'));
+      }, 10000);
+      const finish = (mode) => {
+        clearTimeout(watchdog);
+        if (st.mode === 'blocked') return 'blocked';   // stays blocked even if storage opens late
+        st.mode = mode;
+        st.bootMs = Math.round(performance.now() - t0);
+        st.readyResolve(st.mode);
+        return mode;
+      };
+      try {
+        if (!('indexedDB' in window)) throw new Error('no-idb');
+        // Open + read the head. An upgraded phone retries over ~8–9 s
+        // (each try limited to 2.5 s); a never-upgraded phone tries once,
+        // as before.
+        let head = null, lastErr = null;
+        const waits = [0, 800, 1500, 2000, 2000];
+        for (let i = 0; i < waits.length; i++) {
+          if (st.mode === 'blocked') return 'blocked';
+          if (waits[i]) await new Promise(r => setTimeout(r, waits[i]));
+          try {
+            head = upgraded ? await lxsTimeout(lxsReadHead(), 2500) : await lxsReadHead();
+            break;
+          } catch (e) {
+            lastErr = e;
+            st.db = null;
+            if (!upgraded) throw e;
+            console.warn('[storage] new storage not opening, try ' + (i + 1), e);
+          }
+        }
+        if (!head) { clearTimeout(watchdog); if (st.mode !== 'blocked') lxsBlock('cantOpen', lastErr); return 'blocked'; }
+        if (head.v === 2) { upgraded = true; st.upgradedDevice = true; }
+        if (head.v === 2 && head.d) {
+          st.deviceId = head.d;
+          try {
+            await LXS.loadAllIntoMemory();
+          } catch (e) {
+            // one more go before giving up
+            console.warn('[storage] reading new storage failed, retrying', e);
+            st.db = null;
+            await new Promise(r => setTimeout(r, 1000));
+            try { await LXS.loadAllIntoMemory(); }
+            catch (e2) { clearTimeout(watchdog); if (st.mode !== 'blocked') lxsBlock('cantOpen', e2); return 'blocked'; }
+          }
+          if (st.mode === 'blocked') return 'blocked';
+          st.upgradeReport = st.meta.upgradeReport || null;
+          window.__lxUpgradeReport = st.upgradeReport;
+          lxsEnterV2Extras();
+          finish('v2');
+          setTimeout(() => { try { if (localStorage.getItem('lx8_device_id') !== head.d) localStorage.setItem('lx8_device_id', head.d); } catch (e) {} }, 0);
+          const later0 = window.requestIdleCallback || function (fn) { setTimeout(fn, 1500); };
+          later0(() => { lxsRollbackCheck(); }, { timeout: 4000 });
+          return st.mode;
+        }
+        if (upgraded && head.v !== 2) {
+          // Marker says this phone was upgraded, but the new storage has no
+          // data: never upgrade again silently from the old storage.
+          clearTimeout(watchdog);
+          lxsBlock('missing', new Error('marker-without-storage'));
+          return 'blocked';
+        }
+        let deviceId = head.d;
+        if (!deviceId) {
+          try { deviceId = localStorage.getItem('lx8_device_id') || ''; } catch (e) { deviceId = ''; }
+          if (!deviceId) deviceId = 'dev_' + LXS.uuid();
+          await LXS.metaPut('deviceId', deviceId);
+        }
+        try { if (localStorage.getItem('lx8_device_id') !== deviceId) localStorage.setItem('lx8_device_id', deviceId); } catch (e) {}
+        st.deviceId = deviceId;
+        let ver = await LXS.metaGet('storageVersion');
+        if (ver !== 2) {
+          const overlayTimer = setTimeout(lxsShowUpgradeOverlay, 1000);
+          try {
+            await lxsWithLock(async () => {
+              // another tab may have finished it while we waited
+              const v = await LXS.metaGet('storageVersion');
+              if (v === 2) return;
+              await lxsRunUpgrade();
+            });
+          } catch (e) {
+            console.warn('[storage] upgrade did not finish', e);
+            st.upgradeFailed = { at: new Date().toISOString(), err: String((e && (e.name + ': ' + e.message)) || e) };
+            // remove only the partial NEW copy; old data was never touched
+            try {
+              const db = await LXS.openFs();
+              const tx = db.transaction(['records', 'photos', 'photoData', 'meta'], 'readwrite');
+              tx.objectStore('records').clear();
+              tx.objectStore('photos').clear();
+              tx.objectStore('photoData').clear();
+              tx.objectStore('meta').put(st.upgradeFailed, 'upgradeError');
+              await LXS.txDone(tx);
+            } catch (e2) {}
+          } finally {
+            clearTimeout(overlayTimer);
+            lxsHideUpgradeOverlay();
+          }
+          ver = await LXS.metaGet('storageVersion').catch(() => null);
+        }
+        if (ver === 2) {
+          st.upgradedDevice = true;
+          await LXS.loadAllIntoMemory();
+          if (st.mode === 'blocked') return 'blocked';
+          st.upgradeReport = st.meta.upgradeReport || st.upgradeReport;
+          window.__lxUpgradeReport = st.upgradeReport;
+          lxsEnterV2Extras();
+          finish('v2');
+        } else {
+          finish('legacy');
+        }
+      } catch (e) {
+        if (upgraded || st.upgradedDevice) {
+          // an upgraded phone never falls back to the old storage
+          clearTimeout(watchdog);
+          if (st.mode !== 'blocked') lxsBlock('cantOpen', e);
+          return 'blocked';
+        }
+        console.warn('[storage] new storage unavailable, using old storage', e);
+        if (!st.upgradeFailed) st.upgradeFailed = { at: new Date().toISOString(), err: String((e && e.message) || e) };
+        finish('legacy');
+      }
+      if (st.mode === 'legacy' && st.upgradeFailed) {
+        setTimeout(() => { try { toast('Storage upgrade didn\'t finish — your data is safe; please contact your manager', 8000); } catch (e) {} }, 600);
+      }
+      if (st.mode === 'v2') {
+        const later = window.requestIdleCallback || function (fn) { setTimeout(fn, 1500); };
+        later(() => { lxsRollbackCheck(); }, { timeout: 4000 });
+      }
+      return st.mode;
+    }
+    // Writes that are still waiting go out the moment the app is hidden or
+    // closed; a failed write is retried then too.
+    document.addEventListener('visibilitychange', () => {
+      if (!LXS.isV2()) return;
+      if (document.visibilityState === 'hidden') { LXS.sweepAllNow(); LXS.flush().catch(() => {}); }
+      else if (document.visibilityState === 'visible' && LXS.st.stale.size && !LXS.st.pending.size) lxsReloadStale();
+    });
+    window.addEventListener('pagehide', () => { if (LXS.isV2()) { LXS.sweepAllNow(); LXS.flush().catch(() => {}); } });
+    async function lxsReloadStale() {
+      // Another tab saved while this one was in the background: reload the
+      // in-memory copy from storage so this tab doesn't work on old data.
+      const kinds = Array.from(LXS.st.stale);
+      LXS.st.stale.clear();
+      try {
+        await LXS.loadAllIntoMemory();
+        storeMem.jobs = null; storeMem.customers = null; storeMem.sites = null; storeMem.machines = null;
+        storeMem.partsRequests = null; storeMem.serials = null; storeMem.editLog = null;
+        storeMem.inspections = LXS.st.arrays.inspections;
+        if (kinds.indexOf('timeEntries') >= 0 && typeof tcLoad === 'function') { try { tcLoad(); } catch (e) {} }
+        if ((kinds.indexOf('punchlistLists') >= 0 || kinds.indexOf('punchlistItems') >= 0) && typeof window.plReloadFromStorage === 'function') {
+          await window.plReloadFromStorage();
+        }
+        try { refreshHome(); } catch (e) {}
+      } catch (e) { console.warn('[storage] reload after other tab failed', e); }
+    }
+    // The app starts when storage is ready. A blocked phone never becomes
+    // ready, so nothing behind the blocking screen starts.
+    lxsBoot().catch(e => console.warn('[storage] boot', e));
+    const lxsReady = LXS.ready;
+    window.__lxsReady = lxsReady;
 
     function dataUrlToBlob(dataUrl) {
       try {
@@ -577,6 +2760,7 @@ const ICO = {
     }
 
     async function persistAllStores() {
+      if (lxsIsV2Safe()) return LXS.flush();
       const visits = storeMem.visits || [];
       const inspections = storeMem.inspections || [];
       const slimVisits = [];
@@ -625,6 +2809,7 @@ const ICO = {
     }
 
     function schedulePersist() {
+      if (lxsIsV2Safe()) return;
       clearTimeout(lxPersistTimer);
       lxPersistTimer = setTimeout(() => {
         persistAllStores().catch(err => console.warn(err));
@@ -632,6 +2817,15 @@ const ICO = {
     }
 
     async function bootStorage() {
+      if (lxsIsV2Safe()) {
+        storeMem.visits = [];
+        storeMem.inspections = LXS.st.arrays.inspections;
+        storeMem.ready = true;
+        try {
+          if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+        } catch (e) {}
+        return;
+      }
       let visits = lsRead('lx8_visits', []);
       let inspections = lsRead('lx8_inspections', []);
       try {
@@ -675,7 +2869,12 @@ const ICO = {
       else setTimeout(run, 250);
     }
 
-    function saveInspections(list) {
+    function saveInspections(list, opts) {
+      if (lxsIsV2Safe()) {
+        storeMem.inspections = Array.isArray(list) ? list : [];
+        LXS.save('inspections', storeMem.inspections, opts);
+        return true;
+      }
       storeMem.inspections = Array.isArray(list) ? list : [];
       // The debounced IndexedDB persist is the durable copy; kick it off
       // regardless of whether the quick localStorage mirror below succeeds.
@@ -718,7 +2917,7 @@ const ICO = {
       const idx = list.findIndex(i => i.id === currentInspection.id);
       if (idx >= 0) list[idx] = currentInspection;
       else list.unshift(currentInspection);
-      saveInspections(list);
+      saveInspections(list, { hintIds: [currentInspection.id] });
     }
 
     // ========== UI HELPERS ==========
@@ -1039,7 +3238,7 @@ const ICO = {
     function openPunchlistLinkSheet(name) {
       linkingPunchlistName = name || '';
       const title = document.getElementById('plLinkJobTitle');
-      if (title) title.textContent = name || 'Link job';
+      if (title) title.textContent = (name ? punchlistKeyLabel(name) : '') || 'Link job';
       let currentId = '';
       const items = document.querySelectorAll('#recentPunchlistList .list-item');
       items.forEach((card) => {
@@ -1419,6 +3618,14 @@ const ICO = {
       bits.push(photoCount + ' photo' + (photoCount === 1 ? '' : 's'));
       bits.push(persisted ? 'kept by the OS' : 'ask the OS to keep');
       if (sub) sub.textContent = bits.join(' · ');
+      try {
+        // v170: storage version and record counts (Phase 16A)
+        const v2 = LXS.settingsText();
+        const v2Line = document.getElementById('storageV2Line');
+        if (v2Line) { v2Line.textContent = v2.line; v2Line.hidden = !v2.line; }
+        const v2Warn = document.getElementById('storageV2Warn');
+        if (v2Warn) { v2Warn.textContent = v2.warn; v2Warn.hidden = !v2.warn; }
+      } catch (e) {}
       try { refreshSampleDataCard(); } catch (e) {}
       try { refreshPlShrinkCard(); } catch (e) {}
     }
@@ -1546,6 +3753,10 @@ const ICO = {
       if (staleMachineIds.length) saveMachines(loadMachines().filter(m => !m || !staleMachineIds.includes(m.id)));
     }
     function performRemoveSampleData() {
+      if (lxsIsV2Safe()) return LXS.withSourceSync('sampleRemoval', '', performRemoveSampleDataInner);
+      return performRemoveSampleDataInner();
+    }
+    function performRemoveSampleDataInner() {
       lsWrite('lx8_sample_job_seeded', true);
       lsWrite('lx8_sample_inspection_seeded', true);
       const jobs = loadJobs();
@@ -1596,6 +3807,19 @@ const ICO = {
     function safeZipName(s) {
       return String(s || 'item').replace(/[^a-z0-9._-]+/gi, '_').replace(/^_+|_+$/g, '').slice(0, 48) || 'item';
     }
+    function lxsBuildSyncMeta() {
+      const out = { version: 1, deviceId: LXS.st.deviceId, exportedAt: new Date().toISOString(), records: {} };
+      LXS.KINDS.forEach(kind => {
+        const m = {};
+        LXS.st.known[kind].forEach((k, id) => {
+          if (k.deleted) return;
+          m[id] = { createdAt: k.env.createdAt, updatedAt: k.env.updatedAt, updatedBy: k.env.updatedBy, deviceId: k.env.deviceId, changeSource: k.env.changeSource, fp: lxsSyncFp(kind, k.json) };
+        });
+        out.records[kind] = m;
+      });
+      return out;
+    }
+    function lxsSyncFp(kind, json) { return LXS.syncFp(kind, json); }
     async function exportBackupZip() {
       toast('Building backup…');
       try {
@@ -1650,7 +3874,15 @@ const ICO = {
         // shape as customers/sites/serials directly above.
         try { machinesData = JSON.parse(JSON.stringify(loadMachines() || [])); }
         catch (e) { identityErrors.push('machines'); console.warn('machines backup failed', e); }
-        const photos = await STORE.getAllPhotos();
+        let photos;
+        if (lxsIsV2Safe()) {
+          // punchlist.json carries punchlist photos inline (as before); every
+          // other photo that isn't deleted goes in photos/ — unowned ones too.
+          if (typeof window.plEnsureLoaded === 'function') await window.plEnsureLoaded();
+          photos = await LXS.getAllLivePhotos({ exclude: LXS.inlinePunchlistPhotoIds() });
+        } else {
+          photos = await STORE.getAllPhotos();
+        }
         const files = [
           { name: 'manifest.json', data: JSON.stringify({
             app: 'lematic-lx8',
@@ -1692,6 +3924,13 @@ const ICO = {
           const rawPin = localStorage.getItem('lx8_editor_settings');
           if (rawPin) files.push({ name: 'editor_settings.json', data: rawPin });
         } catch (e) { console.warn('editor settings backup failed', e); }
+        if (lxsIsV2Safe()) {
+          // v170: sync times ride along in their own file; older versions
+          // ignore it. Deleted records aren't in backups, so neither are their
+          // deleted markers.
+          try { files.push({ name: 'sync_meta.json', data: JSON.stringify(lxsBuildSyncMeta()) }); }
+          catch (e) { console.warn('sync meta backup failed', e); }
+        }
         for (const rec of photos) {
           if (!rec || !rec.id || !rec.blob) continue;
           const ext = (rec.blob.type && rec.blob.type.indexOf('png') >= 0) ? 'png' : 'jpg';
@@ -1752,6 +3991,14 @@ const ICO = {
       return new TextDecoder().decode(u8);
     }
     async function importBackupZip(file) {
+      if (!lxsIsV2Safe()) return importBackupZipInner(file);
+      try {
+        return await LXS.withSource('restore', '', () => importBackupZipInner(file));
+      } finally {
+        LXS.st.restoreMeta = null;
+      }
+    }
+    async function importBackupZipInner(file) {
       if (!file) return;
       toast('Restoring backup…');
       try {
@@ -1766,13 +4013,37 @@ const ICO = {
         const visits = byName['visits.json'] ? JSON.parse(u8ToText(byName['visits.json'])) : [];
         const inspections = byName['inspections.json'] ? JSON.parse(u8ToText(byName['inspections.json'])) : [];
         const jobs = byName['jobs.json'] ? JSON.parse(u8ToText(byName['jobs.json'])) : [];
-        const partsRequests = byName['parts_requests.json'] ? JSON.parse(u8ToText(byName['parts_requests.json'])) : [];
+        let partsRequests = byName['parts_requests.json'] ? JSON.parse(u8ToText(byName['parts_requests.json'])) : [];
+        if (lxsIsV2Safe()) {
+          // v170: sync times from a v170 backup are reused for records this
+          // device has never seen, when the record's content still matches.
+          try {
+            if (byName['sync_meta.json']) {
+              const sm = JSON.parse(u8ToText(byName['sync_meta.json']));
+              if (sm && sm.records && typeof sm.records === 'object') LXS.st.restoreMeta = sm.records;
+            }
+          } catch (e) { console.warn('sync_meta restore', e); }
+          // Old (v169 and earlier) backups: punchlist items are re-keyed the
+          // same way the upgrade did it, and parts lines made from those
+          // items follow them.
+          try {
+            if (byName['punchlist.json']) {
+              const plPre = JSON.parse(u8ToText(byName['punchlist.json']));
+              if (plPre && plPre.jobs) {
+                LXS.rekeyBundle(plPre);
+                LXS.stageMeta('idMap', LXS.idMap());
+                partsRequests = LXS.rekeyPartsSources(partsRequests, plPre, { rekeyed: 0, unmatched: [] });
+              }
+            }
+          } catch (e) { console.warn('punchlist pre-scan', e); }
+        }
         const photoFiles = files.filter(f => f.name.indexOf('photos/') === 0);
         for (const pf of photoFiles) {
           const base = pf.name.split('/').pop();
           const id = base.replace(/\.(jpg|jpeg|png)$/i, '');
           const mime = /\.png$/i.test(base) ? 'image/png' : 'image/jpeg';
           const blob = new Blob([pf.data], { type: mime });
+          if (lxsIsV2Safe() && await LXS.photoUnchanged(id, blob)) continue;
           await STORE.putPhoto({ id, blob, caption: '', createdAt: Date.now() });
         }
         storeMem.visits = Array.isArray(visits) ? visits : [];
@@ -1872,7 +4143,8 @@ const ICO = {
         restoreIdentityStore('machines.json', saveMachines, 'machines');
         try {
           if (byName['edit_log.json']) {
-            const parsedLog = JSON.parse(u8ToText(byName['edit_log.json']));
+            let parsedLog = JSON.parse(u8ToText(byName['edit_log.json']));
+            if (Array.isArray(parsedLog) && lxsIsV2Safe()) parsedLog = LXS.rekeyEditLogEntries(parsedLog);
             if (Array.isArray(parsedLog)) STORE.save('editLog', parsedLog);
           }
         } catch (e) { console.warn('edit log restore', e); }
@@ -2774,6 +5046,10 @@ const ICO = {
       });
     }
     async function runEquipmentBackfill() {
+      if (lxsIsV2Safe()) return LXS.withSource('backfill', '', runEquipmentBackfillInner);
+      return runEquipmentBackfillInner();
+    }
+    async function runEquipmentBackfillInner() {
       const report = {
         machinesBefore: (loadMachines() || []).length,
         machinesAfter: 0,
@@ -3663,6 +5939,7 @@ const ICO = {
       const next = all.filter(r => r.id !== id);
       if (next.length === all.length) { toast('Parts request not found'); closeDeleteModal(); return; }
       const ok = savePartsRequests(next);
+      if (lxsIsV2Safe() && target) LXS.deletePhotosExplicit((target.parts || []).map(p => p && p.photoId).filter(Boolean));
       if (partsFormDraft && partsFormDraft.id === id) partsFormDraft = null;
       closeDeleteModal();
       toast(ok ? 'Parts request deleted' : 'Could not save parts request — storage full or unavailable');
@@ -3671,7 +5948,10 @@ const ICO = {
     }
     function performDeletePartsLine(id) {
       if (!id || !partsFormDraft) { toast('No part to delete'); return; }
+      const lxsLine = (partsFormDraft.parts || []).find(p => p && p.id === id);
+      const lxsLinePhoto = (lxsLine && lxsLine.photoId) || '';
       partsFormDraft.parts = (partsFormDraft.parts || []).filter(p => p.id !== id);
+      if (lxsLinePhoto && lxsIsV2Safe()) LXS.deletePhotosExplicit([lxsLinePhoto]);
       closeDeleteModal();
       renderPartsForm();
       const ok = savePartsFormDraft(false);
@@ -5605,7 +7885,15 @@ const ICO = {
         closeDeleteModal();
         return;
       }
+      // v170: the inspection's own photos are marked deleted with it.
+      const lxsInsPhotoIds = [];
+      if (lxsIsV2Safe()) {
+        const victim = list.find(i => i && i.id === id);
+        if (victim && victim.results) Object.keys(victim.results).forEach(k => { const r = victim.results[k]; if (r && r.photoId) lxsInsPhotoIds.push(r.photoId); });
+        if (victim && Array.isArray(victim.findings)) victim.findings.forEach(f => { if (f && f.photoId) lxsInsPhotoIds.push(f.photoId); });
+      }
       saveInspections(next);
+      if (lxsInsPhotoIds.length) LXS.deletePhotosExplicit(lxsInsPhotoIds);
 
       // Verify write stuck
       const check = loadInspections();
@@ -6190,7 +8478,11 @@ const ICO = {
 
 
     function newEntityId(prefix) {
-      return String(prefix || 'id') + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      // v170: same format (prefix + time + 6 random characters); the random
+      // part now comes from the browser's secure generator.
+      let r;
+      try { r = LXS.rand6(); } catch (e) { r = Math.random().toString(36).slice(2, 8); }
+      return String(prefix || 'id') + '_' + Date.now().toString(36) + r;
     }
     function isInternalId(value) {
       return /^(job|ins|pl|tc|vis|bakery|machine)_/i.test(String(value || '').trim());
@@ -6244,6 +8536,13 @@ const ICO = {
       return parts.join(' · ');
     }
 
+    // v170: the text a list key used to show where the raw key was shown
+    // (Needs Attention, search). Lists that used to be keyed by their name
+    // keep showing that name after getting a unique id.
+    function punchlistKeyLabel(key) {
+      try { return LXS.isV2() ? LXS.listLabel(key) : String(key == null ? '' : key); } catch (e) { return String(key == null ? '' : key); }
+    }
+    window.punchlistKeyLabel = punchlistKeyLabel;
     function punchlistKeyForJob(job) {
       if (!job) return '';
       ensureJobIdentity(job);
@@ -9433,6 +11732,10 @@ const ICO = {
     } else if (window.EMBEDDED_DATA && window.EMBEDDED_DATA.sections && window.EMBEDDED_DATA.sections.length) {
       APP_DATA = window.EMBEDDED_DATA;
     }
+    // v170 (Phase 16A): the first screen waits for storage to be ready (the
+    // in-memory copy is read from the database first), so nothing is ever
+    // drawn from — or saved against — an empty copy.
+    lxsReady.then(() => {
     initApp();
     bootStorage().then(async () => {
       // Phase 15A: one-time equipment backfill, guarded so it only ever
@@ -9442,6 +11745,7 @@ const ICO = {
       const later = window.requestIdleCallback || function(fn){ setTimeout(fn, 1800); };
       later(() => { warmExcelLibs(); });
     }).catch(() => {});
+    });
 
     // Register service worker (PWA) and keep drafts on device
     
@@ -9707,6 +12011,7 @@ const IDB_NAME = "FieldPunchlistDB";
       return (typeof isSampleDataLocation === 'function') ? isSampleDataLocation() : true;
     }
     async function plLoadData() {
+      if (lxsIsV2Safe()) return plLoadDataV2();
       try {
         let saved = await plMigrateFromOldDatabase();
         if (!saved) {
@@ -9745,6 +12050,45 @@ const IDB_NAME = "FieldPunchlistDB";
       }
     }
 
+    // v170 (Phase 16A): punchlists live as one record per list and per item
+    // in the new storage; this rebuilds the same in-memory bundle shape the
+    // rest of this module has always used. Same seeding rules as above.
+    let plV2Loading = null;
+    function plLoadDataV2() {
+      // One load at a time: everything that asks for the punchlists while a
+      // load is running waits for that same load.
+      if (plLoaded && data && data.jobs) return Promise.resolve();
+      if (!plV2Loading) plV2Loading = plLoadDataV2Run().finally(() => { plV2Loading = null; });
+      return plV2Loading;
+    }
+    async function plLoadDataV2Run() {
+      try {
+        const saved = await LXS.loadPunchlistBundle();
+        if (saved && saved.jobs && saved.currentJob) data = saved;
+        else if (!plUseSamplePunchlists()) {
+          data = (saved && saved.jobs && typeof saved.jobs === 'object') ? saved : { jobs: {}, currentJob: '' };
+          if (!LXS.st.meta['pl:initialized']) await plSaveData();
+        }
+        else {
+          data = LXS.rekeyBundle(JSON.parse(JSON.stringify(defaultData))).bundle;
+          LXS.stageMeta('idMap', LXS.idMap());
+          await plSaveData();
+        }
+        try { migratePunchlistJobKeys(); } catch (e) {}
+        plLoaded = true;
+      } catch (e) {
+        console.warn('punchlist load', e);
+        data = plUseSamplePunchlists() ? LXS.rekeyBundle(JSON.parse(JSON.stringify(defaultData))).bundle : { jobs: {}, currentJob: '' };
+        plLoaded = false;
+      }
+    }
+    window.plReloadFromStorage = async function () {
+      plLoaded = false;
+      data = null;
+      await plLoadData();
+      try { populateJobSelect(); renderList(); } catch (e) {}
+    };
+
     // v156 (punchlist speed): every punchlist change in this page already
     // goes through the in-memory `data` object and is saved from it, so
     // once the bundle has been read from storage the in-memory copy is
@@ -9762,6 +12106,7 @@ const IDB_NAME = "FieldPunchlistDB";
       }
       return plLoadingPromise;
     }
+    window.plEnsureLoaded = plEnsureLoaded;
 
     async function plSaveData() {
       // The kv 'punchlist_main' write + field_punchlist_v3 fallback-with-
@@ -9821,9 +12166,21 @@ const IDB_NAME = "FieldPunchlistDB";
       } catch (e) {}
       const jobs = Object.keys(data.jobs);
       if (!jobs.length) {
+        if (lxsIsV2Safe()) {
+          // v170: same "Default" list, with a unique id
+          const nk = newEntityId('pl');
+          if (!data.listNames) data.listNames = {};
+          data.listNames[nk] = "Default";
+          data.jobs[nk] = [];
+          data.currentJob = nk;
+          jobs.push(nk);
+          // not stored until it gets an item or a new name (as in v169)
+          LXS.markPunchlistPlaceholder(nk);
+        } else {
         data.jobs["Default"] = [];
         data.currentJob = "Default";
         jobs.push("Default");
+        }
       }
       if (!data.currentJob || !data.jobs[data.currentJob]) data.currentJob = jobs[0];
       sel.innerHTML = jobs.map(j => {
@@ -10137,14 +12494,17 @@ const IDB_NAME = "FieldPunchlistDB";
     }
     function performDeleteInspectPhoto() {
       const itemId = photoViewerItemId;
+      let lxsDeletedPhotoId = '';
       if (itemId != null && results) {
         const key = Object.keys(results).find(k => String(k) === String(itemId)) || itemId;
         if (results[key]) {
+          lxsDeletedPhotoId = results[key].photoId || '';
           delete results[key].photoDataUrl;
           delete results[key].photoId;
         }
       }
       try { if (typeof saveCurrentDraft === 'function') saveCurrentDraft(); } catch (e) {}
+      if (lxsDeletedPhotoId && lxsIsV2Safe()) LXS.deletePhotosExplicit([lxsDeletedPhotoId]);
       try { if (typeof closePunchlistPhoto === 'function') closePunchlistPhoto(); } catch (e) {}
       const viewer = document.getElementById('pl-photo-viewer');
       if (viewer) {
@@ -10389,8 +12749,10 @@ const IDB_NAME = "FieldPunchlistDB";
         const items = getItems();
         const idx = items.findIndex(i => String(i.id) === String(editingId));
         if (idx >= 0) {
+          const lxsPhoto = lxsIsV2Safe() ? LXS.itemPhotoId(editingId) : '';
           items[idx] = { ...items[idx], photo: null };
           setItems(items);
+          if (lxsPhoto) LXS.deletePhotosExplicit([lxsPhoto]);
         }
       }
     }
@@ -10664,7 +13026,7 @@ const IDB_NAME = "FieldPunchlistDB";
         // Australia"). Try a looser match before giving up: same
         // words, ignoring case, whitespace, and punctuation.
         if (!job) {
-          const rawKey = (typeof data !== 'undefined' && data && data.currentJob) ? String(data.currentJob) : '';
+          const rawKey = (typeof data !== 'undefined' && data && data.currentJob) ? String(punchlistKeyLabel(data.currentJob)) : '';
           const normalize = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
           const keyNorm = normalize(rawKey);
           if (keyNorm) {
@@ -10735,7 +13097,9 @@ const IDB_NAME = "FieldPunchlistDB";
       }
       const items = getItems();
       const next = items.filter(i => String(i.id) !== String(targetId));
+      const lxsPhoto = lxsIsV2Safe() ? LXS.itemPhotoId(targetId) : '';
       setItems(next);
+      if (lxsPhoto) LXS.deletePhotosExplicit([lxsPhoto]);
       // If this item had generated a parts-request line, remove that
       // too — the problem it was for no longer exists.
       if (typeof removePartsRequestSource === 'function') removePartsRequestSource('punchlist', targetId);
@@ -10887,6 +13251,20 @@ const IDB_NAME = "FieldPunchlistDB";
       const name = document.getElementById("new-job-name").value.trim();
       if (!name) { alert("Enter a job name"); return; }
       if (data.jobs[name]) { alert("A job with that name already exists"); return; }
+      if (lxsIsV2Safe()) {
+        // v170: a new list always gets a unique id; its name is its display name.
+        const nk = newEntityId('pl');
+        if (!data.listNames) data.listNames = {};
+        data.listNames[nk] = name;
+        data.jobs[nk] = [];
+        data.currentJob = nk;
+        plSaveData();
+        populateJobSelect();
+        closeModal();
+        renderList();
+        toast("Punchlist created: " + name);
+        return;
+      }
       data.jobs[name] = [];
       data.currentJob = name;
       plSaveData();
@@ -10987,6 +13365,7 @@ const IDB_NAME = "FieldPunchlistDB";
       if (jobId && data.keyByJobId && data.keyByJobId[jobId] === key) {
         delete data.keyByJobId[jobId];
       }
+      const lxsListPhotos = lxsIsV2Safe() ? (data.jobs[key] || []).map(it => it && LXS.itemPhotoId(it.id)).filter(Boolean) : [];
       delete data.jobs[key];
       if (data.listNames) delete data.listNames[key];
       if (data.jobIdByKey) delete data.jobIdByKey[key];
@@ -10995,6 +13374,7 @@ const IDB_NAME = "FieldPunchlistDB";
         data.currentJob = left[0] || '';
       }
       await plSaveData();
+      if (lxsListPhotos.length) LXS.deletePhotosExplicit(lxsListPhotos);
       if (typeof closeDeleteModal === 'function') closeDeleteModal();
       if (typeof closePunchlistStartSheet === 'function') closePunchlistStartSheet();
       document.body.classList.remove('on-pl-edit');
@@ -11154,7 +13534,7 @@ const IDB_NAME = "FieldPunchlistDB";
       Object.keys(data.jobs).forEach(name => {
         (data.jobs[name] || []).forEach(item => {
           if (!item) return;
-          const hay = [item.description, item.action, item.location, item.line, item.comments, item.department, item.status, name,
+          const hay = [item.description, item.action, item.location, item.line, item.comments, item.department, item.status, punchlistKeyLabel(name),
             item.dueDate, item.createdAt,
             (typeof searchDateHay === "function" ? searchDateHay(item.dueDate) : ""),
             (typeof searchDateHay === "function" ? searchDateHay(item.createdAt) : "")]
@@ -11183,7 +13563,7 @@ const IDB_NAME = "FieldPunchlistDB";
       if (!data || !data.jobs) return [];
       const links = data.jobIdByKey || {};
       const fieldJobs = (typeof loadJobs === 'function' ? loadJobs() : []) || [];
-      return Object.keys(data.jobs).map(name => {
+      return Object.keys(data.jobs).filter(name => !(lxsIsV2Safe() && LXS.isPunchlistPlaceholder(data, name))).map(name => {
         const items = data.jobs[name] || [];
         const complete = items.filter(i => i && i.status === 'Complete').length;
         const jobId = links[name] || '';
@@ -11203,6 +13583,18 @@ const IDB_NAME = "FieldPunchlistDB";
       await plLoadData();
       if (!data) data = { jobs: {}, currentJob: '' };
       if (!data.jobs) data.jobs = {};
+      if (lxsIsV2Safe() && !data.jobs[name]) {
+        // v170: an old list name resolves to its new id; an unknown name
+        // becomes a new list with a unique id (the name is its display name).
+        const mapped = LXS.resolveLegacyListKey(name);
+        if (data.jobs[mapped]) name = mapped;
+        else if (!LXS.isUniqueListKey(name)) {
+          const nk = newEntityId('pl');
+          if (!data.listNames) data.listNames = {};
+          data.listNames[nk] = name;
+          name = nk;
+        }
+      }
       if (!data.jobs[name]) data.jobs[name] = [];
       if (!data.jobIdByKey) data.jobIdByKey = {};
       if (!data.keyByJobId) data.keyByJobId = {};
@@ -11222,6 +13614,10 @@ const IDB_NAME = "FieldPunchlistDB";
       if (!data) data = { jobs: {}, currentJob: '' };
       if (!data.jobs) data.jobs = {};
       let key = name;
+      if (lxsIsV2Safe() && !data.jobs[key]) {
+        const mapped = LXS.resolveLegacyListKey(name);
+        if (data.jobs[mapped]) key = mapped;
+      }
       if (!data.jobs[key]) {
         if (data.keyByJobId && data.keyByJobId[name]) key = data.keyByJobId[name];
         else if (data.jobIdByKey && data.jobIdByKey[name] && data.jobs[data.jobIdByKey[name]]) key = data.jobIdByKey[name];
@@ -11234,11 +13630,20 @@ const IDB_NAME = "FieldPunchlistDB";
       // something (a new empty list, or a different current list). It used
       // to rewrite the whole bundle — every photo — on every open.
       let plOpenChanged = false;
+      if (!data.jobs[key] && lxsIsV2Safe() && !LXS.isUniqueListKey(key)) {
+        const nk = newEntityId('pl');
+        if (!data.listNames) data.listNames = {};
+        data.listNames[nk] = key;
+        key = nk;
+      }
       if (!data.jobs[key]) { data.jobs[key] = []; plOpenChanged = true; }
       if (data.currentJob !== key) plOpenChanged = true;
       data.currentJob = key;
       name = key;
-      if (plOpenChanged) await plSaveData();
+      if (plOpenChanged) {
+        if (lxsIsV2Safe()) LXS.savePunchlist(data, { listsOnly: true });
+        else await plSaveData();
+      }
       populateJobSelect();
       renderList();
       try {
@@ -11252,6 +13657,12 @@ const IDB_NAME = "FieldPunchlistDB";
     };
     window.setPunchlistBackup = async function(saved) {
       if (!saved || !saved.jobs) throw new Error('bad-punchlist');
+      if (lxsIsV2Safe()) {
+        // v170: old list names / item numbers get their unique ids (the
+        // same ones the upgrade gave them, via the saved id map).
+        saved = LXS.rekeyBundle(saved).bundle;
+        LXS.stageMeta('idMap', LXS.idMap());
+      }
       data = saved;
       plLoaded = true;
       if (!data.currentJob || !data.jobs[data.currentJob]) {
@@ -11957,7 +14368,7 @@ const IDB_NAME = "FieldPunchlistDB";
 
     async function exportPunchlistExcel() {
       const items = getItems();
-      const jobName = data.currentJob || "Punchlist";
+      const jobName = punchlistKeyLabel(data.currentJob) || "Punchlist";
       const safeName = jobName.replace(/[\\/:*?"<>|]/g, "-").trim() || "Punchlist";
       const filename = safeName + " Punchlist.xlsx";
 
@@ -13808,7 +16219,7 @@ function tcRenderEntryList(listEl, offset) {
 
     }
 
-    tcLoad();
+    lxsReady.then(() => tcLoad());
 
     (function bindTcDeleteBtn() {
       const btn = document.getElementById('btnTcEditDelete');
@@ -13824,7 +16235,7 @@ function tcRenderEntryList(listEl, offset) {
     bindTimeCards();
     setTimeout(bindTimeCards, 300);
 
-    prefetchExportLibs(); initPunchlist().catch(err => console.warn('Punchlist init', err));
+    prefetchExportLibs(); lxsReady.then(() => initPunchlist()).catch(err => console.warn('Punchlist init', err));
   
 
   
@@ -15024,6 +17435,11 @@ function tcRenderEntryList(listEl, offset) {
       spec = spec || {};
       const idsBefore = editorIdIndex();
       const before = editorSnapshotRecords(spec);
+      // v170: every record this change touches is stamped changeSource
+      // 'editor' with this log entry's id.
+      const entryId = newEntityId('ed');
+      const lxsSrc = lxsIsV2Safe() ? LXS.pushSource('editor', entryId) : null;
+      try {
       let threw = null;
       try {
         await mutateFn();
@@ -15048,7 +17464,7 @@ function tcRenderEntryList(listEl, offset) {
       };
       const after = editorSnapshotRecords(specAfter);
       const entry = {
-        id: newEntityId('ed'),
+        id: entryId,
         at: new Date().toISOString(),
         kind,
         summary,
@@ -15068,6 +17484,9 @@ function tcRenderEntryList(listEl, offset) {
       while (log.length > 50) log.pop();
       editorLogSave(log);
       return entry;
+      } finally {
+        if (lxsSrc) LXS.popSource(lxsSrc);
+      }
     }
 
     function editorPreviewHtml(lines, warn) {
@@ -15556,7 +17975,7 @@ function tcRenderEntryList(listEl, offset) {
       block('First-seen log entries', groups.firstSeen.length, inner);
       inner = '';
       groups.oldLine.forEach((g) => {
-        inner += '<div class="ed-row ed-oldline" data-key="' + editorEsc(g.listKey) + '"><div class="ed-row-title">' + editorEsc(g.listKey) + '</div><div class="ed-row-sub">' + g.items.length + ' item' + (g.items.length===1?'':'s') + ' with old line text</div></div>';
+        inner += '<div class="ed-row ed-oldline" data-key="' + editorEsc(g.listKey) + '"><div class="ed-row-title">' + editorEsc(punchlistKeyLabel(g.listKey)) + '</div><div class="ed-row-sub">' + g.items.length + ' item' + (g.items.length===1?'':'s') + ' with old line text</div></div>';
       });
       block('Old punchlist line text', groups.oldLine.length, inner);
       if (!html) html = '<div class="ed-empty">Nothing flagged</div>';
@@ -15573,7 +17992,8 @@ function tcRenderEntryList(listEl, offset) {
         const can = i === firstUndoable;
         html += '<div class="ed-row"><div class="ed-row-title">' + editorEsc(e.summary || e.kind) + '</div>' +
           '<div class="ed-row-sub">' + editorEsc(when) + (e.undone ? ' · undone' : '') +
-          (can ? ' · <button type="button" class="btn-link ed-undo" data-id="' + editorEsc(e.id) + '">Undo this</button>' : '') +
+          (can && e.preUpgradeNoUndo ? ' · Can\'t undo — made before the storage upgrade' : '') +
+          (can && !e.preUpgradeNoUndo ? ' · <button type="button" class="btn-link ed-undo" data-id="' + editorEsc(e.id) + '">Undo this</button>' : '') +
           '</div></div>';
       });
       return html;
@@ -16188,9 +18608,9 @@ function tcRenderEntryList(listEl, offset) {
       if (!items.length) return;
       const preview = items.slice(0, 12).map(it => (it.description || it.location || 'Item') + ': “' + it.line + '” → comments').join('\n');
       editorConfirmPreview('Move old line text', editorPreviewHtml([
-        { text: listKey, count: items.length + ' item' + (items.length===1?'':'s') + '. Line text is copied into comments, then the line field is cleared.' }
+        { text: punchlistKeyLabel(listKey), count: items.length + ' item' + (items.length===1?'':'s') + '. Line text is copied into comments, then the line field is cleared.' }
       ]) + '<pre style="white-space:pre-wrap;font-size:12px;color:var(--muted);">' + editorEsc(preview) + '</pre>', async () => {
-        await editorCommit('pl-old-line', 'Moved old line text into comments on ' + listKey, {
+        await editorCommit('pl-old-line', 'Moved old line text into comments on ' + punchlistKeyLabel(listKey), {
           punchlistItems: items.map(it => ({ listKey, id: it.id }))
         }, async () => {
           const pl = window.getPunchlistBackup();
@@ -16251,6 +18671,7 @@ function tcRenderEntryList(listEl, offset) {
       const log = editorLogLoad();
       const entry = log.find(e => e && e.id === id);
       if (!entry || entry.undone) return;
+      if (entry.preUpgradeNoUndo) { toast('Can\'t undo — made before the storage upgrade'); return; }
       const newestOpen = log.find(e => e && !e.undone);
       if (!newestOpen || newestOpen.id !== id) { toast('Undo the newest change first'); return; }
       const chk = editorCurrentMatchesAfter(entry.after);
@@ -16274,6 +18695,8 @@ function tcRenderEntryList(listEl, offset) {
       const applyBtn = document.getElementById('edPreviewApply');
       if (applyBtn) applyBtn.style.display = '';
       editorConfirmPreview('Undo', editorPreviewHtml([{ text: entry.summary || entry.kind }]), async () => {
+        const lxsSrc = lxsIsV2Safe() ? LXS.pushSource('undo', entry.id) : null;
+        try {
         await editorRestoreSnapshot(entry.before);
         editorDeleteCreated(entry.created);
         const leftover = editorPointersToCreated(entry.created).filter((h) => {
@@ -16291,6 +18714,9 @@ function tcRenderEntryList(listEl, offset) {
         if (row) row.undone = true;
         editorLogSave(latest);
         toast('Undone');
+        } finally {
+          if (lxsSrc) LXS.popSource(lxsSrc);
+        }
       });
     }
 
