@@ -89,7 +89,7 @@ If the app is not at the domain root (`/YOUR_REPO/`), keep `start_url` and `scop
 ## Updates not showing on iPhone
 iOS keeps the last installed PWA in cache. After you upload a new build to GitHub:
 
-1. Bump the `?v=` number on `app.css`, `app.js`, `templates.js`, and `sw.js` (this build is `v=171`).
+1. Bump the `?v=` number on `app.css`, `app.js`, `templates.js`, and `sw.js` (this build is `v=172`).
 2. Open the app **while online** and leave it on Home for a few seconds.
 3. Swipe it closed, then open it again.
 

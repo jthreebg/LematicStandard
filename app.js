@@ -14454,6 +14454,38 @@ const IDB_NAME = "FieldPunchlistDB";
         ws.spliceRows(deleteFrom, deleteCount);
       }
 
+      // v172: the template carries duplicate, OVERLAPPING dropdown rules
+      // (F10:F50 inside F6:F50, and H10:H50 inside H6:H50). Excel treats
+      // overlapping data validation as a damaged file — that is what
+      // produced the "problem ... recover" prompt on open. Throw away
+      // whatever the template had and lay down exactly one Department
+      // rule and one Status rule, covering only the rows actually used.
+      // Each rule is written as ONE range ("F6:F35") rather than cell by
+      // cell: ExcelJS's writer sorts cell addresses as text ("F10" before
+      // "F6") when grouping them, and with 5+ items that alone produced
+      // overlapping ranges again. A range key skips that grouping step.
+      try {
+        const lastUsed = firstDataRow + used - 1;
+        const dv = {};
+        dv['F' + firstDataRow + ':F' + lastUsed] = {
+          type: 'list', allowBlank: true, formulae: ['Lists!$A$2:$A$6'],
+          showInputMessage: true, promptTitle: 'Department', prompt: 'Select a department',
+          showErrorMessage: true, errorTitle: 'Invalid department',
+          error: 'Choose Service, Engineering, Programming, Sales, or Bakery.'
+        };
+        dv['H' + firstDataRow + ':H' + lastUsed] = {
+          type: 'list', allowBlank: true, formulae: ['Lists!$B$2:$B$5'],
+          showInputMessage: true, promptTitle: 'Status', prompt: 'Select a status',
+          showErrorMessage: true, errorTitle: 'Invalid status',
+          error: 'Choose Complete, In Progress, Not Started, or Waiting Parts.'
+        };
+        if (ws.dataValidations) ws.dataValidations.model = dv;
+      } catch (e) {
+        // If anything about the rebuild fails, ship no dropdowns rather
+        // than a file Excel has to repair.
+        try { if (ws.dataValidations) ws.dataValidations.model = {}; } catch (e2) {}
+      }
+
       if (ws.conditionalFormattings && ws.conditionalFormattings.length) {
         const last = firstDataRow + used - 1;
         ws.conditionalFormattings.forEach((cf) => {
@@ -14500,13 +14532,10 @@ const IDB_NAME = "FieldPunchlistDB";
 
       const out = await wb.xlsx.writeBuffer();
       const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+      // v172: go through the share sheet (same helper the other exports
+      // use). The old bare download link opened an in-app preview on
+      // iPhone that could hang with no way back out of the installed app.
+      await downloadBlob(blob, filename);
       toast("Excel ready — use Save to Files if asked");
     }
 
