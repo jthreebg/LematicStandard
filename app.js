@@ -13848,13 +13848,26 @@ const IDB_NAME = "FieldPunchlistDB";
 
     
 
+    // v172: a stored template copy is used only if it really is an xlsx file
+    // (an ArrayBuffer starting with "PK"). Anything else, such as a copy a
+    // browser handed back in another shape, is ignored and the built-in
+    // template file is used instead.
+    function usableTemplateBuffer(v) {
+      try {
+        let buf = null;
+        if (v instanceof ArrayBuffer) buf = v;
+        else if (v && ArrayBuffer.isView(v)) buf = v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
+        else if (v && typeof v.byteLength === 'number' && typeof v.slice === 'function') buf = v;
+        if (!buf || buf.byteLength < 100) return null;
+        const head = new Uint8Array(buf.slice(0, 2));
+        return (head[0] === 0x50 && head[1] === 0x4B) ? buf : null;
+      } catch (e) { return null; }
+    }
     async function loadWorkbookTemplate(fileName, cacheKey) {
       const key = cacheKey || fileName;
       try {
-        const cached = await idbGetKv(key);
-        if (cached && (cached.byteLength || (cached.buffer && cached.byteLength !== 0))) {
-          return cached.buffer ? cached : cached;
-        }
+        const cached = usableTemplateBuffer(await idbGetKv(key));
+        if (cached) return cached;
       } catch (e) {}
       const names = [fileName, './' + fileName, fileName.split('/').pop()];
       let lastErr = null;
@@ -13866,13 +13879,13 @@ const IDB_NAME = "FieldPunchlistDB";
           if (!buf || buf.byteLength < 100) { lastErr = new Error('Empty template ' + name); continue; }
           const head = new Uint8Array(buf.slice(0, 2));
           if (head[0] !== 0x50 || head[1] !== 0x4B) { lastErr = new Error('Not an xlsx: ' + name); continue; }
-          try { await idbSetKv(key, buf); } catch (e) {}
+          try { await idbSetKv(key, buf.slice(0)); } catch (e) {}
           return buf;
         } catch (e) { lastErr = e; }
       }
       try {
-        const cached = await idbGetKv(key);
-        if (cached) return cached.buffer ? cached : cached;
+        const cached = usableTemplateBuffer(await idbGetKv(key));
+        if (cached) return cached;
       } catch (e) {}
       throw lastErr || new Error('Could not load ' + fileName);
     }
@@ -14384,11 +14397,81 @@ const IDB_NAME = "FieldPunchlistDB";
     
 
 
+    // v172: Excel-safe workbook fixes (the Excel library writes two things
+    // desktop Excel rejects with "We found a problem with some content"):
+    //  1. Dropdown rules: the library merges per-cell rules into ranges in
+    //     text order ("F10" before "F6"), producing overlapping ranges
+    //     (F10:F50 and F6:F50). Rebuild them as one range per unbroken run.
+    //  2. Pictures: a picture with only a size is written as a one-cell
+    //     anchor carrying an attribute only two-cell anchors may have. Give
+    //     every picture both corners instead (same place, same size).
+    function xlFixDataValidations(ws) {
+      try {
+        const dvs = ws && ws.dataValidations;
+        const model = dvs && dvs.model;
+        if (!model) return;
+        const keys = Object.keys(model);
+        const groups = {};
+        const keep = {};
+        keys.forEach(k => {
+          const m = /^([A-Z]+)(\d+)$/.exec(k);
+          if (!m) { keep[k] = model[k]; return; }
+          const sig = m[1] + '|' + JSON.stringify(model[k]);
+          (groups[sig] = groups[sig] || { col: m[1], dv: model[k], rows: [] }).rows.push(Number(m[2]));
+        });
+        const out = Object.assign({}, keep);
+        Object.keys(groups).forEach(sig => {
+          const g = groups[sig];
+          const rows = g.rows.sort((a, b) => a - b);
+          let start = rows[0], prev = rows[0];
+          const flush = () => { out[start === prev ? (g.col + start) : (g.col + start + ':' + g.col + prev)] = g.dv; };
+          for (let i = 1; i < rows.length; i++) {
+            if (rows[i] === prev + 1) { prev = rows[i]; continue; }
+            flush(); start = prev = rows[i];
+          }
+          flush();
+        });
+        dvs.model = out;
+      } catch (e) { console.warn('[excel] dropdown fix skipped', e); }
+    }
+    const XL_EMU_PER_PX = 9525;
+    function xlColPx(ws, idx0) {
+      try { const w = ws.getColumn(idx0 + 1).width; return Math.round((w || 8.43) * 7 + (w ? 0 : 5)); } catch (e) { return 64; }
+    }
+    function xlRowPx(ws, idx0) {
+      try { const h = ws.getRow(idx0 + 1).height; return Math.round((h || 15) * 96 / 72); } catch (e) { return 20; }
+    }
+    // Bottom-right corner of a picture placed at (col0,row0)+offsets with the
+    // given pixel size, as exact cell + offset positions.
+    function xlBottomRight(ws, col0, colOffEmu, row0, rowOffEmu, wPx, hPx) {
+      let col = col0, x = (colOffEmu || 0) / XL_EMU_PER_PX + wPx;
+      for (let guard = 0; guard < 200 && x >= xlColPx(ws, col); guard++) { x -= xlColPx(ws, col); col++; }
+      let row = row0, y = (rowOffEmu || 0) / XL_EMU_PER_PX + hPx;
+      for (let guard = 0; guard < 2000 && y >= xlRowPx(ws, row); guard++) { y -= xlRowPx(ws, row); row++; }
+      return { nativeCol: col, nativeColOff: Math.round(x * XL_EMU_PER_PX), nativeRow: row, nativeRowOff: Math.round(y * XL_EMU_PER_PX) };
+    }
+    function xlFixPictureAnchors(ws) {
+      try {
+        (ws.getImages() || []).forEach(img => {
+          const r = img && img.range;
+          if (!r || r.br || !r.tl || !r.ext) return;
+          const tl = { nativeCol: r.tl.nativeCol || 0, nativeColOff: r.tl.nativeColOff || 0, nativeRow: r.tl.nativeRow || 0, nativeRowOff: r.tl.nativeRowOff || 0 };
+          const br = xlBottomRight(ws, tl.nativeCol, tl.nativeColOff, tl.nativeRow, tl.nativeRowOff, r.ext.width || 0, r.ext.height || 0);
+          img.model = { type: 'image', imageId: img.imageId, range: { tl: tl, br: br, editAs: 'oneCell' }, hyperlinks: img.hyperlinks };
+        });
+      } catch (e) { console.warn('[excel] picture fix skipped', e); }
+    }
+
     async function exportPunchlistExcel() {
       const items = getItems();
-      const jobName = punchlistKeyLabel(data.currentJob) || "Punchlist";
-      const safeName = jobName.replace(/[\\/:*?"<>|]/g, "-").trim() || "Punchlist";
-      const filename = safeName + " Punchlist.xlsx";
+      // v172: the file is named after the list's real name (as the PDF is),
+      // never its internal id ("pl_mu5n…").
+      let jobName = '';
+      try { jobName = punchlistDisplayName(data.currentJob) || ''; } catch (e) {}
+      if (!jobName || isInternalId(jobName)) { try { jobName = punchlistKeyLabel(data.currentJob) || ''; } catch (e) {} }
+      if (!jobName || isInternalId(jobName)) jobName = "Punchlist";
+      const safeName = String(jobName).replace(/[\\/:*?"<>|]/g, "-").trim() || "Punchlist";
+      const filename = (/punchlist$/i.test(safeName) ? safeName : safeName + " Punchlist") + ".xlsx";
 
       function normStatus(s) {
         const v = String(s || "").trim().toLowerCase();
@@ -14454,38 +14537,6 @@ const IDB_NAME = "FieldPunchlistDB";
         ws.spliceRows(deleteFrom, deleteCount);
       }
 
-      // v172: the template carries duplicate, OVERLAPPING dropdown rules
-      // (F10:F50 inside F6:F50, and H10:H50 inside H6:H50). Excel treats
-      // overlapping data validation as a damaged file — that is what
-      // produced the "problem ... recover" prompt on open. Throw away
-      // whatever the template had and lay down exactly one Department
-      // rule and one Status rule, covering only the rows actually used.
-      // Each rule is written as ONE range ("F6:F35") rather than cell by
-      // cell: ExcelJS's writer sorts cell addresses as text ("F10" before
-      // "F6") when grouping them, and with 5+ items that alone produced
-      // overlapping ranges again. A range key skips that grouping step.
-      try {
-        const lastUsed = firstDataRow + used - 1;
-        const dv = {};
-        dv['F' + firstDataRow + ':F' + lastUsed] = {
-          type: 'list', allowBlank: true, formulae: ['Lists!$A$2:$A$6'],
-          showInputMessage: true, promptTitle: 'Department', prompt: 'Select a department',
-          showErrorMessage: true, errorTitle: 'Invalid department',
-          error: 'Choose Service, Engineering, Programming, Sales, or Bakery.'
-        };
-        dv['H' + firstDataRow + ':H' + lastUsed] = {
-          type: 'list', allowBlank: true, formulae: ['Lists!$B$2:$B$5'],
-          showInputMessage: true, promptTitle: 'Status', prompt: 'Select a status',
-          showErrorMessage: true, errorTitle: 'Invalid status',
-          error: 'Choose Complete, In Progress, Not Started, or Waiting Parts.'
-        };
-        if (ws.dataValidations) ws.dataValidations.model = dv;
-      } catch (e) {
-        // If anything about the rebuild fails, ship no dropdowns rather
-        // than a file Excel has to repair.
-        try { if (ws.dataValidations) ws.dataValidations.model = {}; } catch (e2) {}
-      }
-
       if (ws.conditionalFormattings && ws.conditionalFormattings.length) {
         const last = firstDataRow + used - 1;
         ws.conditionalFormattings.forEach((cf) => {
@@ -14521,21 +14572,29 @@ const IDB_NAME = "FieldPunchlistDB";
             const isPng = src.indexOf('image/png') >= 0;
             const base64 = src.replace(/^data:image\/[^;]+;base64,/, '');
             const imgId = wb.addImage({ base64: base64, extension: isPng ? 'png' : 'jpeg' });
+            // v172: both corners given (Excel-safe two-cell anchor), same
+            // place and size as before: 220 x 150 px at the top-left of C.
             pws.addImage(imgId, {
-              tl: { col: 2, row: rowIdx - 1 },
-              ext: { width: 220, height: 150 },
+              tl: { nativeCol: 2, nativeColOff: 0, nativeRow: rowIdx - 1, nativeRowOff: 0 },
+              br: xlBottomRight(pws, 2, 0, rowIdx - 1, 0, 220, 150),
               editAs: 'oneCell'
             });
           } catch (e) {}
         });
       }
 
+      xlFixDataValidations(ws);
+      xlFixPictureAnchors(ws);
+
       const out = await wb.xlsx.writeBuffer();
       const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-      // v172: go through the share sheet (same helper the other exports
-      // use). The old bare download link opened an in-app preview on
-      // iPhone that could hang with no way back out of the installed app.
-      await downloadBlob(blob, filename);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
       toast("Excel ready — use Save to Files if asked");
     }
 
@@ -14581,7 +14640,10 @@ const IDB_NAME = "FieldPunchlistDB";
       closePlExportSheet();
       exportPunchlistExcel().catch(err => {
         console.warn(err);
-        toast("Could not build Excel file");
+        // v172: include the reason, so a failure on a phone can be traced.
+        let why = '';
+        try { why = String((err && (err.message || err.name)) || err || '').replace(/\s+/g, ' ').slice(0, 80); } catch (e) {}
+        toast("Could not build Excel file" + (why ? " (" + why + ")" : ""));
       });
     });
     const plExportCancel = document.getElementById('plExportCancel');
