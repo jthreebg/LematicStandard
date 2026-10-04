@@ -14462,6 +14462,59 @@ const IDB_NAME = "FieldPunchlistDB";
       } catch (e) { console.warn('[excel] picture fix skipped', e); }
     }
 
+    // v172: the Excel library writes a sheet's page-setup and outline
+    // settings in the wrong order when both exist, and Excel then rejects
+    // the whole sheet ("Replaced Part: sheet1.xml"). The outline settings
+    // are Excel's own defaults (summary rows below / right), so they are
+    // dropped; the page setup (fit to page) is kept.
+    function xlFixSheetProperties(wb) {
+      try {
+        (wb.worksheets || []).forEach(sh => {
+          if (sh && sh.properties && sh.properties.outlineProperties) delete sh.properties.outlineProperties;
+        });
+      } catch (e) { console.warn('[excel] sheet properties fix skipped', e); }
+    }
+    // v172: workbook names Excel cross-checks against the sheet.
+    //  - The template carries the filter's internal name as a workbook-wide
+    //    name; Excel expects it to belong to the sheet, and the library
+    //    shrinks it when rows are trimmed so it no longer matches the filter.
+    //    It is removed; Excel rebuilds it from the sheet's own filter.
+    //  - The print area is written by the library as $A1:$H50 (row not
+    //    fixed); it is given in a form that comes out as $A$1:$H$50.
+    function xlFixWorkbookNames(wb) {
+      try {
+        if (wb.definedNames && Array.isArray(wb.definedNames.model)) {
+          wb.definedNames.model = wb.definedNames.model.filter(d => d && d.name !== '_xlnm._FilterDatabase');
+        }
+      } catch (e) { console.warn('[excel] names fix skipped', e); }
+      try {
+        (wb.worksheets || []).forEach(sh => {
+          const ps = sh && sh.pageSetup;
+          if (!ps || !ps.printArea) return;
+          ps.printArea = String(ps.printArea).split('&&').map(r => r.split(':').map(c => {
+            const m = /^\$?([A-Z]+)\$?(\d+)$/.exec(c.trim());
+            return m ? (m[1] + '$' + m[2]) : c;
+          }).join(':')).join('&&');
+        });
+      } catch (e) { console.warn('[excel] print area fix skipped', e); }
+    }
+    // v172: colour rules ("cell contains Bakery", etc.) are saved by the
+    // library without the text Excel normally stores with them. Save them as
+    // plain formula rules instead: same formula, same colours.
+    function xlFixColourRules(ws) {
+      try {
+        (ws.conditionalFormattings || []).forEach(cf => {
+          (cf && cf.rules || []).forEach(rule => {
+            if (rule && rule.type === 'containsText' && rule.formulae && rule.formulae[0]) {
+              rule.type = 'expression';
+              delete rule.operator;
+              delete rule.text;
+            }
+          });
+        });
+      } catch (e) { console.warn('[excel] colour rule fix skipped', e); }
+    }
+
     async function exportPunchlistExcel() {
       const items = getItems();
       // v172: the file is named after the list's real name (as the PDF is),
@@ -14585,6 +14638,9 @@ const IDB_NAME = "FieldPunchlistDB";
 
       xlFixDataValidations(ws);
       xlFixPictureAnchors(ws);
+      xlFixSheetProperties(wb);
+      xlFixColourRules(ws);
+      xlFixWorkbookNames(wb);
 
       const out = await wb.xlsx.writeBuffer();
       const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
